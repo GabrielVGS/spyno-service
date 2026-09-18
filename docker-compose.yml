@@ -1,0 +1,30 @@
+# Dois serviços. Sem Redis e sem MinIO: nesta escala o Postgres é a fila, e o
+# estado das janelas de atribuição vive na tabela de decisões.
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: spyno
+      POSTGRES_PASSWORD: spyno
+      POSTGRES_DB: spyno_decision
+    ports: ["5433:5432"]
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U spyno -d spyno_decision"]
+      interval: 5s
+      retries: 10
+
+  service:
+    build: .
+    depends_on:
+      db: {condition: service_healthy}
+    environment:
+      SPYNO_DB_URL: postgresql+psycopg://spyno:spyno@db:5432/spyno_decision
+      SPYNO_POLICY: ${SPYNO_POLICY:-ts_hybrid}
+      SPYNO_SHADOW: ${SPYNO_SHADOW:-1}
+      SPYNO_CHECKPOINT_DIR: /app/checkpoints
+    ports: ["8000:8000"]
+    volumes: ["./checkpoints:/app/checkpoints:ro"]
+
+volumes:
+  pgdata:

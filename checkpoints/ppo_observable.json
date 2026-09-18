@@ -1,0 +1,14 @@
+{
+  "observation_dim": 14,
+  "n_actions": 4,
+  "steps": 200000,
+  "cost": 0.05,
+  "learning_rate": 0.0003,
+  "n_steps": 2048,
+  "ent_coef": 0.01,
+  "batch_size": 64,
+  "seed": 42,
+  "users": 12,
+  "days": 28,
+  "note": "treinado sobre o vetor observável; não usa motivação, habilidade nem sono exatos"
+}
