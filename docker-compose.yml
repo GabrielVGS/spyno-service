@@ -1,30 +1,49 @@
-# Dois serviços. Sem Redis e sem MinIO: nesta escala o Postgres é a fila, e o
-# estado das janelas de atribuição vive na tabela de decisões.
+# Traefik e cloudflared já rodam em outro projeto Compose, na rede externa
+# `proxy`. Aqui sobem apenas o serviço de decisão e seu Postgres.
 services:
+  decision:
+    build:
+      context: .
+      args:
+        COM_PPO: ${COM_PPO:-0}
+    restart: unless-stopped
+    environment:
+      SPYNO_DB_URL: postgresql+psycopg://spyno:${POSTGRES_PASSWORD:-spyno}@db:5432/spyno_decision
+      SPYNO_POLICY: ${SPYNO_POLICY:-ts_hybrid}
+      SPYNO_SHADOW: ${SPYNO_SHADOW:-1}
+      SPYNO_CHECKPOINT_DIR: /app/checkpoints
+    volumes:
+      - ./checkpoints:/app/checkpoints:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    networks: [proxy, internal]
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=proxy
+      - traefik.http.routers.spyno-decision.rule=Host(`${SPYNO_DECISION_HOST:-decisao.spyno.app}`)
+      - traefik.http.routers.spyno-decision.entrypoints=web
+      - traefik.http.services.spyno-decision.loadbalancer.server.port=8000
+
   db:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_USER: spyno
-      POSTGRES_PASSWORD: spyno
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-spyno}
       POSTGRES_DB: spyno_decision
-    ports: ["5433:5432"]
-    volumes: ["pgdata:/var/lib/postgresql/data"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks: [internal]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U spyno -d spyno_decision"]
       interval: 5s
       retries: 10
 
-  service:
-    build: .
-    depends_on:
-      db: {condition: service_healthy}
-    environment:
-      SPYNO_DB_URL: postgresql+psycopg://spyno:spyno@db:5432/spyno_decision
-      SPYNO_POLICY: ${SPYNO_POLICY:-ts_hybrid}
-      SPYNO_SHADOW: ${SPYNO_SHADOW:-1}
-      SPYNO_CHECKPOINT_DIR: /app/checkpoints
-    ports: ["8000:8000"]
-    volumes: ["./checkpoints:/app/checkpoints:ro"]
-
 volumes:
   pgdata:
+
+networks:
+  proxy:
+    external: true
+  internal:

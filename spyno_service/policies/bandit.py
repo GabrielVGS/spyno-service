@@ -9,20 +9,7 @@ quando necessário, carrega a posterior salva.
 from __future__ import annotations
 
 import json
-import os
-import sys
 from pathlib import Path
-
-#: O `spyno-decision` está marcado como não-pacote no seu pyproject, de modo que
-#: não é instalável por pip/uv. Como ele vive ao lado deste projeto, o caminho
-#: entra em sys.path. Ajustável por SPYNO_DECISION_PATH.
-_SIBLING = Path(os.getenv(
-    "SPYNO_DECISION_PATH",
-    Path(__file__).resolve().parents[3] / "spyno-decision",
-))
-
-if _SIBLING.is_dir() and str(_SIBLING) not in sys.path:
-    sys.path.insert(0, str(_SIBLING))
 
 
 #: O `spyno_decision.features.vectorize` ainda espera estas chaves. Elas saíram
@@ -61,10 +48,7 @@ class _CompatibilidadeHerdada:
 
 
 def _missing(name: str) -> None:
-    raise RuntimeError(
-        f"a política '{name}' vem do pacote spyno_decision, não encontrado em "
-        f"{_SIBLING}. Aponte SPYNO_DECISION_PATH para o diretório correto."
-    )
+    raise RuntimeError(f"a política '{name}' depende do pacote spyno_decision")
 
 
 def _hybrid_servable_class():
