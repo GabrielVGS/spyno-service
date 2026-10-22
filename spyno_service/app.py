@@ -172,6 +172,10 @@ def create_app(policy=None, store=None, config=None) -> FastAPI:
             recommended, fallback, fallback_reason, pi = 0, True, type(exc).__name__, None
 
         executed, guardrail_reason = apply_guardrails(recommended, eff_ctx, cfg)
+        # Ação proposta: a que TERIA sido executada sem o shadow, isto é, a
+        # recomendada depois dos guardrails reais. É sobre ela que o backend
+        # calcula os contadores *_proposed; fora do shadow é a executada.
+        proposed = executed
         # O guardrail depende só do contexto. Se ele bloquearia qualquer envio,
         # a abstenção executada tem probabilidade 1, e o ponto não é elegível
         # para treino (no simulador, cota estourada e sono tornam o ponto
@@ -211,6 +215,7 @@ def create_app(policy=None, store=None, config=None) -> FastAPI:
             "update_eligible": update_eligible,
             "recommended_action": recommended,
             "executed_action": executed,
+            "proposed_action": proposed,
             "guardrail_reason": guardrail_reason,
             "propensity": propensity,
             "recommended_propensity": rec_prop,
@@ -325,6 +330,7 @@ def _to_response(record: dict) -> DecideResponse:
         recommended_action=record["recommended_action"],
         recommended_arm=ARMS[record["recommended_action"]],
         executed_action=record["executed_action"],
+        proposed_action=_proposed_action(record),
         propensity=record["propensity"],
         recommended_propensity=record.get("recommended_propensity") or record["propensity"],
         arm_probabilities=_json_or_none(record.get("arm_probs")),
@@ -339,6 +345,19 @@ def _to_response(record: dict) -> DecideResponse:
         guardrail_reason=record["guardrail_reason"],
         latency_ms=record["latency_ms"],
     )
+
+
+def _proposed_action(record: dict) -> int:
+    """Ação proposta gravada; para linhas anteriores à coluna, reconstruída.
+
+    A reconstrução é a mesma regra: em shadow, a recomendada só conta como
+    proposta se nenhum guardrail a bloqueou (guardrail_reason == "shadow").
+    """
+    if record.get("proposed_action") is not None:
+        return int(record["proposed_action"])
+    if not record["shadow"]:
+        return int(record["executed_action"])
+    return int(record["recommended_action"]) if record["guardrail_reason"] == "shadow" else 0
 
 
 def _json_or_none(value):

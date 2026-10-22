@@ -31,8 +31,10 @@ class Context(BaseModel):
     Contadores no shadow mode: em shadow nada é enviado, então os contadores
     "reais" (`notifs_today`, `fatigue`, `minutes_since_last`) ficam presos em
     zero/None. Os campos `*_proposed` são os mesmos contadores calculados pelo
-    backend sobre a ação PROPOSTA (`recommended_action`), isto é, sobre o que a
-    política teria enviado. Em shadow o serviço usa os `*_proposed` para as
+    backend sobre a ação PROPOSTA (`proposed_action` da resposta), isto é, a
+    que teria sido executada sem o shadow: a `recommended_action` depois dos
+    guardrails reais (silêncio, cota, intervalo). Uma recomendação bloqueada
+    por guardrail não teria saído e não conta. Em shadow o serviço usa os `*_proposed` para as
     features e os guardrails, e registra as duas versões no log
     (`counter_basis` diz qual foi usada). Fora do shadow os dois coincidem e o
     serviço usa os reais.
@@ -80,6 +82,10 @@ class DecideResponse(BaseModel):
     recommended_action: int = Field(ge=0, le=3, description="Ação escolhida pela política")
     recommended_arm: str
     executed_action: int = Field(ge=0, le=3, description="Ação após guardrails e shadow mode")
+    proposed_action: int = Field(ge=0, le=3, description="Ação que teria sido executada sem o "
+                                 "shadow: a recomendada após os guardrails reais. Fora do "
+                                 "shadow é igual à executed_action. Base dos contadores "
+                                 "*_proposed que o backend envia")
     propensity: float = Field(gt=0, le=1, description="P(ação executada | contexto) sob o "
                               "processo de coleta: política clipada, guardrails e shadow. "
                               "Vale 1 quando um guardrail ou o shadow forçam a abstenção")

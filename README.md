@@ -64,8 +64,11 @@ Garantias:
 - **Shadow.** Nada é enviado (`executed_action=0`) e o update usa (x, 0, y),
   nunca a ação proposta. Os contadores `*_proposed` do contexto
   (`notifs_today_proposed`, `fatigue_proposed`, `minutes_since_last_proposed`)
-  são os calculados pelo backend sobre a ação proposta; em shadow eles
-  alimentam features e guardrails. O log guarda o contexto bruto e o efetivo,
+  são os calculados pelo backend sobre a ação proposta, devolvida em
+  `proposed_action`: a que teria sido executada sem o shadow, ou seja, a
+  recomendada depois dos guardrails reais (recomendação bloqueada por silêncio,
+  cota ou intervalo não conta). Fora do shadow ela é a executada. Em shadow os
+  `*_proposed` alimentam features e guardrails. O log guarda o contexto bruto e o efetivo,
   com `counter_basis`.
 - **Contingência registrada.** Falha ou estouro de tempo limite cai na regra
   conservadora, marcada com `propensity_method="fallback"`.

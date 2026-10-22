@@ -35,6 +35,9 @@ decisions = Table(
     Column("context", Text, nullable=False),
     Column("recommended_action", Integer, nullable=False),
     Column("executed_action", Integer, nullable=False),
+    # a que teria sido executada sem o shadow (recomendada após os guardrails);
+    # nula nas linhas gravadas antes da coluna (ver app._proposed_action)
+    Column("proposed_action", Integer),
     Column("guardrail_reason", String(32)),
     Column("propensity", Float, nullable=False),
     Column("propensity_method", String(16), nullable=False),
@@ -71,7 +74,8 @@ decisions = Table(
 #: Colunas acrescentadas no esquema v2. Bancos criados antes recebem um
 #: ALTER TABLE explícito na abertura (ver Store._migrar).
 V2_COLUMNS = ("eligible", "update_eligible", "policy_context", "counter_basis",
-              "recommended_propensity", "arm_probs", "trained", "train_skip_reason")
+              "recommended_propensity", "arm_probs", "trained", "train_skip_reason",
+              "proposed_action")
 
 #: Dias já fechados por /v1/end-day: é o que torna o fechamento idempotente.
 policy_days = Table(

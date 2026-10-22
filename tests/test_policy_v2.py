@@ -552,3 +552,58 @@ def test_end_day_idempotente_por_data(tmp_path):
         np.testing.assert_array_equal(inner.m, m1)
         r3 = c.post("/v1/end-day", json={"date": str(date(2026, 10, 23))}).json()
         assert r3["already_closed"] is False and r3["updates_applied"] == 1
+
+
+# ---- ação proposta: semântica única com o backend ---------------------------
+
+def test_acao_proposta_e_a_recomendada_apos_os_guardrails(tmp_path):
+    """proposed_action = o que teria sido executado sem o shadow.
+
+    É a base dos contadores *_proposed no backend (Notificacao.acao_proposta).
+    Recomendação bloqueada por guardrail não teria saído: proposta 0.
+    """
+    rec = Recorder(wins=(0, 0, 0, 10))
+    with _client(tmp_path, ClippedPolicy(rec, CLIP, n_samples=1, seed=3), shadow=True,
+                 daily_cap=3, cooldown_min=90) as c:
+        livres, bloqueadas = [], []
+        for h in range(8, 20):
+            livres.append(_decide(c, user="livre", point=f"2026-10-22T{h:02d}:00:00-03:00",
+                                  hour=h, notifs_today_proposed=0, fatigue_proposed=0.0))
+        for user, ctx in (("silencio", {"hour": 23}),
+                          ("cota", {"notifs_today_proposed": 3}),
+                          ("intervalo", {"minutes_since_last_proposed": 30})):
+            for h in range(8, 20):
+                base = {"hour": h, "notifs_today_proposed": 0, "fatigue_proposed": 0.0}
+                bloqueadas.append(_decide(c, user=user,
+                                          point=f"2026-10-22T{h:02d}:00:00-03:00",
+                                          **{**base, **ctx}))
+        repetida = _decide(c, user="livre", point="2026-10-22T08:00:00-03:00", hour=8,
+                           notifs_today_proposed=0, fatigue_proposed=0.0)
+
+    assert any(b["recommended_action"] > 0 for b in livres)
+    for b in livres:
+        assert b["executed_action"] == 0 and b["guardrail_reason"] == "shadow"
+        assert b["proposed_action"] == b["recommended_action"]
+    assert any(b["recommended_action"] > 0 for b in bloqueadas)
+    for b in bloqueadas:
+        if b["recommended_action"] > 0:
+            assert b["guardrail_reason"] in ("quiet_hours", "daily_cap", "cooldown")
+        assert b["proposed_action"] == 0, "bloqueada por guardrail não teria saído"
+    assert repetida["proposed_action"] == livres[0]["proposed_action"], "idempotência"
+
+
+def test_acao_proposta_fora_do_shadow_e_a_executada(tmp_path):
+    with _client(tmp_path, ClippedPolicy(Recorder(), CLIP, n_samples=1, seed=3)) as c:
+        livre = _decide(c)
+        silencio = _decide(c, user="noite", hour=23)
+    assert livre["proposed_action"] == livre["executed_action"]
+    assert silencio["proposed_action"] == silencio["executed_action"] == 0
+
+
+def test_acao_proposta_reconstruida_para_linha_antiga():
+    from spyno_service.app import _proposed_action
+
+    base = {"recommended_action": 2, "executed_action": 0, "proposed_action": None}
+    assert _proposed_action({**base, "shadow": True, "guardrail_reason": "shadow"}) == 2
+    assert _proposed_action({**base, "shadow": True, "guardrail_reason": "cooldown"}) == 0
+    assert _proposed_action({**base, "shadow": False, "guardrail_reason": "quiet_hours"}) == 0
