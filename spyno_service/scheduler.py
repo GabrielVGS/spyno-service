@@ -27,6 +27,9 @@ def build_scheduler(ctx: dict, on_decision_point=None) -> BackgroundScheduler:
         if n:
             log.info("janelas fechadas como censura: %d", n)
 
+    # Atenção: em produção o fechamento do dia é do backend, via POST
+    # /v1/end-day, que é idempotente por data. Este job chama a política direto
+    # e não passa por essa proteção; não ligue os dois ao mesmo tempo.
     @sched.scheduled_job(CronTrigger(hour=3, minute=0))
     def _end_day():
         try:

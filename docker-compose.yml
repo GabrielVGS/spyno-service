@@ -11,6 +11,8 @@ services:
       SPYNO_DB_URL: postgresql+psycopg://spyno:${POSTGRES_PASSWORD:-spyno}@db:5432/spyno_decision
       SPYNO_POLICY: ${SPYNO_POLICY:-ts_hybrid}
       SPYNO_SHADOW: ${SPYNO_SHADOW:-1}
+      # Sem token o serviço responde 503 em /v1/* (fail closed).
+      SPYNO_DECISION_TOKEN: ${SPYNO_DECISION_TOKEN:-}
       SPYNO_CHECKPOINT_DIR: /app/checkpoints
     volumes:
       - ./checkpoints:/app/checkpoints:ro

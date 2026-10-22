@@ -20,8 +20,18 @@ class Config:
     #: Orçamento de latência da decisão. Estourado, responde pela regra de contingência.
     decide_timeout_s: float = float(os.getenv("SPYNO_DECIDE_TIMEOUT", "0.2"))
 
-    #: Amostras de Monte Carlo para a propensão registrada.
-    propensity_samples: int = int(os.getenv("SPYNO_PROPENSITY_SAMPLES", "64"))
+    #: Amostras da posterior para estimar a distribuição do Thompson Sampling
+    #: sobre braços (passo 1 do esquema em policies/clipping.py). A propensão
+    #: registrada é exata para a distribuição sorteada, qualquer que seja este
+    #: número; ele só controla o ruído de Monte Carlo da própria política.
+    propensity_samples: int = int(os.getenv("SPYNO_PROPENSITY_SAMPLES", "1000"))
+
+    #: Probability clipping (esquema v2): P(enviar) fica em [clip_min, clip_max]
+    #: nos pontos elegíveis, e cada braço de envio recebe ao menos a fração
+    #: arm_mix/|S| da massa de envio. Ver policies/clipping.py.
+    clip_min: float = float(os.getenv("SPYNO_CLIP_MIN", "0.1"))
+    clip_max: float = float(os.getenv("SPYNO_CLIP_MAX", "0.9"))
+    arm_mix: float = float(os.getenv("SPYNO_ARM_MIX", "0.1"))
 
     #: Janela de atribuição do desfecho, em minutos.
     outcome_window_min: int = int(os.getenv("SPYNO_OUTCOME_WINDOW_MIN", "180"))
@@ -31,6 +41,12 @@ class Config:
     quiet_end_h: int = int(os.getenv("SPYNO_QUIET_END", "6"))
     daily_cap: int = int(os.getenv("SPYNO_DAILY_CAP", "3"))
     cooldown_min: int = int(os.getenv("SPYNO_COOLDOWN_MIN", "90"))
+
+    #: Autenticação dos /v1/* (exceto /v1/contract): Authorization: Bearer <token>.
+    #: Sem token configurado o serviço responde 503 (fail closed), a menos que
+    #: SPYNO_DECISION_AUTH=disabled esteja definido explicitamente (desenvolvimento).
+    decision_token: str | None = os.getenv("SPYNO_DECISION_TOKEN") or None
+    auth_disabled: bool = os.getenv("SPYNO_DECISION_AUTH", "") == "disabled"
 
     checkpoint_dir: str = os.getenv("SPYNO_CHECKPOINT_DIR", "./checkpoints")
 

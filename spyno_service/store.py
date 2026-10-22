@@ -14,12 +14,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import (Boolean, Column, DateTime, Float, Integer, MetaData,
-                        String, Table, Text, create_engine, func, select, update)
+from sqlalchemy import (Boolean, Column, Date, DateTime, Float, Integer, MetaData,
+                        String, Table, Text, create_engine, func, inspect, select,
+                        text, update)
 
 from .config import CONFIG
+
+log = logging.getLogger("spyno.store")
 
 METADATA = MetaData()
 
@@ -46,6 +50,36 @@ decisions = Table(
     Column("outcome_value", Integer),
     Column("outcome_at", DateTime(timezone=True)),
     Column("window_closes_at", DateTime(timezone=True), nullable=False),
+    # ---- esquema v2 (nulas nas linhas gravadas antes dele) -------------------
+    # elegibilidade informada pelo backend
+    Column("eligible", Boolean),
+    # o desfecho deste ponto pode treinar: elegível, sem guardrail bloqueando e
+    # sem contingência (ver app.py)
+    Column("update_eligible", Boolean),
+    # o que a política efetivamente viu (contexto com os contadores escolhidos);
+    # é com ele que o update é feito
+    Column("policy_context", Text),
+    Column("counter_basis", String(16)),
+    # propensão da ação recomendada e distribuição clipada sobre os braços
+    Column("recommended_propensity", Float),
+    Column("arm_probs", Text),
+    # auditoria do treino
+    Column("trained", Boolean),
+    Column("train_skip_reason", String(48)),
+)
+
+#: Colunas acrescentadas no esquema v2. Bancos criados antes recebem um
+#: ALTER TABLE explícito na abertura (ver Store._migrar).
+V2_COLUMNS = ("eligible", "update_eligible", "policy_context", "counter_basis",
+              "recommended_propensity", "arm_probs", "trained", "train_skip_reason")
+
+#: Dias já fechados por /v1/end-day: é o que torna o fechamento idempotente.
+policy_days = Table(
+    "policy_days", METADATA,
+    Column("day", Date, primary_key=True),
+    Column("policy_version", String(128), nullable=False),
+    Column("updates_applied", Integer, nullable=False),
+    Column("closed_at", DateTime(timezone=True), nullable=False),
 )
 
 
@@ -63,13 +97,20 @@ def _utc(dt: datetime) -> datetime:
     return dt.astimezone(timezone.utc)
 
 
+def decision_hour(decision_point: datetime) -> datetime:
+    """Instante truncado na hora, em UTC: a unidade do ponto de decisão."""
+    return _utc(decision_point).replace(minute=0, second=0, microsecond=0)
+
+
 def make_decision_id(user_key: str, decision_point: datetime, policy_version: str) -> str:
     """Identificador determinístico: o mesmo ponto devolve a mesma decisão.
 
     É o que torna a operação idempotente. Uma repetição de rede não pode virar
-    exploração adicional, porque isso corromperia a propensão registrada.
+    exploração adicional, porque isso corromperia a propensão registrada. O
+    instante é truncado na hora (UTC): dois ticks do mesmo usuário na mesma hora
+    são o mesmo ponto de decisão, mesmo que difiram em minutos ou milissegundos.
     """
-    raw = f"{user_key}|{decision_point.isoformat()}|{policy_version}"
+    raw = f"{user_key}|{decision_hour(decision_point).isoformat()}|{policy_version}"
     return hashlib.sha256(raw.encode()).hexdigest()[:32]
 
 
@@ -86,6 +127,25 @@ class Store:
                           connect_args={"check_same_thread": False})
         self.engine = create_engine(url, **kwargs)
         METADATA.create_all(self.engine)
+        self.migrated_columns = self._migrar()
+
+    def _migrar(self) -> list[str]:
+        """Acrescenta as colunas do esquema v2 a uma tabela criada antes dele.
+
+        `create_all` não altera tabela existente. Sem isto, o primeiro insert num
+        banco antigo falharia. As linhas antigas ficam com as colunas novas nulas
+        e, por terem outra `policy_version`, nunca treinam a política atual.
+        """
+        existentes = {c["name"] for c in inspect(self.engine).get_columns("decisions")}
+        faltando = [c for c in V2_COLUMNS if c not in existentes]
+        if faltando:
+            with self.engine.begin() as conn:
+                for nome in faltando:
+                    col = decisions.c[nome]
+                    tipo = col.type.compile(dialect=self.engine.dialect)
+                    conn.execute(text(f"ALTER TABLE decisions ADD COLUMN {nome} {tipo}"))
+            log.warning("tabela decisions migrada para o esquema v2: %s", ", ".join(faltando))
+        return faltando
 
     # ---- decisões --------------------------------------------------------
 
@@ -99,6 +159,9 @@ class Store:
     def insert(self, record: dict, outcome_window_min: int | None = None) -> None:
         payload = dict(record)
         payload["context"] = json.dumps(payload["context"], default=str)
+        for k in ("policy_context", "arm_probs"):
+            if payload.get(k) is not None and not isinstance(payload[k], str):
+                payload[k] = json.dumps(payload[k], default=str)
         payload.setdefault("created_at", datetime.now(timezone.utc))
         window = outcome_window_min or CONFIG.outcome_window_min
         payload["decision_point"] = _utc(payload["decision_point"])
@@ -140,6 +203,35 @@ class Store:
                 .values(outcome=outcome, outcome_value=value, outcome_at=observed_utc)
             )
         return True, None, outcome
+
+    def mark_trained(self, decision_id: str, trained: bool, reason: str | None) -> None:
+        with self.engine.begin() as conn:
+            conn.execute(
+                update(decisions).where(decisions.c.decision_id == decision_id)
+                .values(trained=trained, train_skip_reason=reason)
+            )
+
+    # ---- fechamento do dia -----------------------------------------------
+
+    def day_closed(self, day) -> bool:
+        with self.engine.begin() as conn:
+            return conn.execute(
+                select(policy_days.c.day).where(policy_days.c.day == day)
+            ).first() is not None
+
+    def close_day(self, day, policy_version: str, updates_applied: int) -> bool:
+        """Registra o fechamento. Devolve False se o dia já estava fechado."""
+        from sqlalchemy.exc import IntegrityError
+
+        try:
+            with self.engine.begin() as conn:
+                conn.execute(policy_days.insert().values(
+                    day=day, policy_version=policy_version,
+                    updates_applied=updates_applied,
+                    closed_at=datetime.now(timezone.utc)))
+        except IntegrityError:
+            return False
+        return True
 
     def close_expired_windows(self, now: datetime | None = None) -> int:
         """Marca como censuradas as decisões cuja janela passou sem resposta.

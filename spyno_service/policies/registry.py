@@ -12,8 +12,10 @@ from pathlib import Path
 from typing import Callable
 
 from ..config import CONFIG
+from ..features import POLICY_SCHEMA
 from . import bandit
 from .base import Policy
+from .clipping import ClipConfig, ClippedPolicy
 
 FACTORIES: dict[str, Callable[..., Policy]] = {
     "ts_hybrid": bandit.ts_hybrid,
@@ -30,7 +32,8 @@ def _ppo(**kwargs) -> Policy:
     from .ppo import PPOPolicy
 
     ckpt = kwargs.pop("checkpoint", Path(CONFIG.checkpoint_dir) / "ppo_observable.zip")
-    return PPOPolicy(checkpoint=ckpt, **kwargs)
+    clip = kwargs.pop("clip", None) or ClipConfig.from_config(CONFIG)
+    return ClippedPolicy(PPOPolicy(checkpoint=ckpt, **kwargs), clip, n_samples=0)
 
 
 FACTORIES["ppo"] = _ppo
@@ -54,11 +57,17 @@ def build(name: str | None = None, **kwargs) -> Policy:
 def version(policy: Policy) -> str:
     """Identidade reproduzível da política servida.
 
-    Combina o nome, a assinatura da fábrica e o estado inicial dos parâmetros.
-    Serve para amarrar cada decisão registrada ao modelo que a produziu: sem
-    isso, não é possível saber meses depois qual política gerou cada envio.
+    Combina o esquema (`features.POLICY_SCHEMA`), o nome, o clipping, a
+    assinatura da fábrica e o estado inicial dos parâmetros. Serve para amarrar
+    cada decisão registrada ao modelo que a produziu: sem isso, não é possível
+    saber meses depois qual política gerou cada envio. O esquema aparece em
+    claro (`ts_hybrid-v2-<hash>`), para que decisões e desfechos de outra versão
+    sejam reconhecidos sem decodificar o hash.
     """
-    parts = [type(policy).__name__, getattr(policy, "name", "?")]
+    parts = [POLICY_SCHEMA, type(policy).__name__, getattr(policy, "name", "?")]
+    if isinstance(policy, ClippedPolicy):
+        parts.append(policy.clip.tag())
+        parts.append(f"n{policy.n_samples}")
     snap = getattr(policy, "snapshot", None)
     if callable(snap):
         try:
@@ -71,4 +80,4 @@ def version(policy: Policy) -> str:
         except (TypeError, ValueError):
             pass
     digest = hashlib.sha256("|".join(parts).encode()).hexdigest()[:12]
-    return f"{getattr(policy, 'name', 'policy')}-{digest}"
+    return f"{getattr(policy, 'name', 'policy')}-{POLICY_SCHEMA}-{digest}"

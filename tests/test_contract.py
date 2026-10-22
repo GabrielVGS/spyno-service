@@ -14,6 +14,10 @@ import pytest
 
 os.environ.setdefault("SPYNO_DB_URL", "sqlite+pysqlite:///:memory:")
 
+#: Token só de teste; o real vem de SPYNO_DECISION_TOKEN.
+TOKEN = "token-de-teste"
+AUTH = {"Authorization": f"Bearer {TOKEN}"}
+
 
 class StubPolicy:
     """Política determinística: notifica com o braço 'signal' quando elegível."""
@@ -68,10 +72,11 @@ def client(tmp_path):
         database_url=f"sqlite+pysqlite:///{tmp_path}/t.db",
         policy="stub",
         shadow=False,
+        decision_token=TOKEN,
     )
     stub = StubPolicy()
     app = create_app(policy=stub, store=Store(cfg.database_url), config=cfg)
-    with TestClient(app) as c:
+    with TestClient(app, headers=AUTH) as c:
         c.stub = stub
         yield c
 
@@ -205,9 +210,10 @@ def _app_with(policy, tmp_path, **overrides):
     from spyno_service.store import Store
 
     defaults = {"database_url": f"sqlite+pysqlite:///{tmp_path}/x.db",
-                "policy": "stub", "shadow": False}
+                "policy": "stub", "shadow": False, "decision_token": TOKEN}
     cfg = replace(Config(), **{**defaults, **overrides})
-    return TestClient(create_app(policy=policy, store=Store(cfg.database_url), config=cfg))
+    return TestClient(create_app(policy=policy, store=Store(cfg.database_url), config=cfg),
+                      headers=AUTH)
 
 
 def test_shadow_mode_nunca_executa(tmp_path):

@@ -10,8 +10,10 @@ numa thread e a política que ele consulta é um adaptador que bloqueia à esper
 da ação do agente. O PPO enfrenta literalmente o mesmo código de ambiente,
 com a mesma função de resposta, a mesma fadiga e a mesma contagem de cota.
 
-A observação é `vectorize(obs)`, o mesmo vetor observável de 16 dimensões que
-as demais políticas recebem. Motivação e habilidade latentes não entram, o que
+A observação é `vectorize_policy_space(obs)`, o mesmo vetor observável (`DIM`
+dimensões) que as demais políticas recebem. O simulador já entrega `obs` no
+espaço da política (`notifs_today / 5`), por isso não se usa `vectorize`, que
+parte do contexto bruto do contrato e dividiria de novo. Motivação e habilidade latentes não entram, o que
 é a diferença central em relação aos checkpoints do trabalho anterior.
 """
 
@@ -25,7 +27,7 @@ import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 
-from spyno_service.features import DIM, vectorize
+from spyno_service.features import DIM, vectorize_policy_space
 
 _SENTINEL_TIMEOUT = 60.0
 
@@ -56,7 +58,7 @@ class _AgentPolicy:
         self.to_env.put(("start", user_id))
 
     def decide(self, user_id, obs, eligible, rng=None):
-        self.to_env.put(("obs", vectorize(obs).astype(np.float32), eligible))
+        self.to_env.put(("obs", vectorize_policy_space(obs).astype(np.float32), eligible))
         arm = self.to_policy.get()
         if arm is None:                     # pedido de encerramento
             raise _Stop()
