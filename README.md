@@ -36,6 +36,7 @@ desenvolvimento. `GET /health` também é aberto.
 | `POST /v1/feedback` | `decision_id` + desfecho, aplicado uma única vez |
 | `POST /v1/end-day` | `{"date": "AAAA-MM-DD"}` (data local). O backend chama uma vez por dia; ajusta a posterior com o buffer do dia e o esvazia. Idempotente por data |
 | `POST /v1/close-windows` | fecha como censura as janelas vencidas, sem treino |
+| `GET /v1/policy-state` | hash da posterior, updates pendentes e dias fechados: confirma de fora que o end-day mudou a posterior (sem expor os pesos) |
 | `GET /health` | política ativa, versão, decisões, desfechos pendentes |
 | `GET /v1/policies`, `GET /v1/features` | políticas disponíveis; ordem do vetor |
 

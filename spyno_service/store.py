@@ -237,6 +237,13 @@ class Store:
             return False
         return True
 
+    def closed_days(self) -> list[dict]:
+        """Dias fechados por /v1/end-day, em ordem."""
+        with self.engine.begin() as conn:
+            rows = conn.execute(select(policy_days).order_by(policy_days.c.day)).mappings().all()
+        return [{"day": r["day"].isoformat(), "updates_applied": r["updates_applied"]}
+                for r in rows]
+
     def close_expired_windows(self, now: datetime | None = None) -> int:
         """Marca como censuradas as decisões cuja janela passou sem resposta.
 
