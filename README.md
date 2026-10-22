@@ -154,6 +154,9 @@ SPYNO_POLICY=ts_hybrid SPYNO_SHADOW=1 \
 docker compose up --build                              # Postgres + serviço
 ```
 
+Ponta a ponta com o backend real (dia simulado, agendador acelerado, export do
+log de `Notificacao`): `python3 demo/run_demo.py`, ver `demo/README.md`.
+
 `SPYNO_SHADOW` vem ligado por padrão: nada chega ao usuário por acidente.
 
 ## Dívidas conhecidas
