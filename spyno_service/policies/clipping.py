@@ -24,9 +24,29 @@ Esquema (v2), num ponto elegível
    proporção das vitórias de cada braço de envio, misturada com uniforme:
        share_k = (1 − η)·vitórias_k / Σ_{j∈S} vitórias_j + η / |S|
    com η = `SPYNO_ARM_MIX` (padrão 0,1). Se nenhum braço de envio venceu, share
-   é uniforme em S. Assim π(k) = p̃_envio·share_k ≥ p_min·η/|S| > 0.
-4. **Abstenção.** π(0) = 1 − p̃_envio ≥ 1 − p_max > 0.
-5. **Sorteio.** A ação é sorteada de π e a propensão registrada é π(ação).
+   é uniforme em S. Sozinho, este passo só garante p̃_envio·share_k ≥ p_min·η/|S|
+   (≈ 0,0033 no padrão), daí o passo 4.
+4. **Piso por braço de envio.** Cada braço de S recebe pelo menos f =
+   `SPYNO_ARM_FLOOR` (padrão 1/30 ≈ 0,0333). Os braços que ficariam abaixo de f
+   sobem para f; os demais repartem o resto da massa de envio na proporção de
+   share_k (projeção por *water-filling*: os braços já acima do piso não mudam
+   de ordem e, se nenhum estiver abaixo, nada muda). A massa total de envio
+   continua p̃_envio. Exige |S|·f ≤ p_min, validado com |S| = 3.
+5. **Abstenção.** π(0) = 1 − p̃_envio ≥ 1 − p_max > 0.
+6. **Sorteio.** A ação é sorteada de π e a propensão registrada é π(ação).
+
+Piso e peso de importância (v2.1)
+---------------------------------
+Sem o passo 4 (v2 original), o menor π(k) de um braço de envio era
+p_min·η/|S| = 0,1·0,1/3 ≈ 0,0033: para uma política-alvo determinística que
+escolhe um braço específico, o peso de importância π_alvo/π chegava a ~300 e a
+OPE sobre o log ficava com variância enorme. Com o piso, o peso máximo para
+qualquer alvo determinístico é 1/min(f, 1 − p_max) (ver
+`max_importance_weight`). O padrão f = p_min/3 = 1/30 limita o peso a 30 sem
+aumentar a exploração mínima: P(enviar) ≥ 0,1 continua sendo o único custo
+fixo. Pesos ≤ 10 exigiriam f = 0,1 e, portanto, P(enviar) ≥ 0,3 em toda hora
+elegível (`SPYNO_CLIP_MIN=0.3 SPYNO_ARM_FLOOR=0.1`). `SPYNO_ARM_FLOOR=0`
+reproduz a v2 sem piso.
 
 Por que a propensão é exata
 ---------------------------
@@ -48,12 +68,19 @@ import numpy as np
 
 from .base import N_ARMS
 
+#: Maior |S| possível (todos os braços menos a abstenção). O piso é validado
+#: contra ele, para valer para qualquer política.
+MAX_SEND_ARMS = N_ARMS - 1
+_EPS = 1e-12
+
 
 @dataclass(frozen=True)
 class ClipConfig:
     p_min: float = 0.1
     p_max: float = 0.9
     arm_mix: float = 0.1
+    #: Piso absoluto de π(k) para cada braço de envio k ∈ S. 0 desliga.
+    arm_floor: float = 1.0 / 30.0
 
     def __post_init__(self):
         if not (0.0 < self.p_min <= self.p_max < 1.0):
@@ -62,18 +89,66 @@ class ClipConfig:
                 f"recebido [{self.p_min}, {self.p_max}]")
         if not (0.0 < self.arm_mix <= 1.0):
             raise ValueError(f"arm_mix precisa estar em (0, 1], recebido {self.arm_mix}")
+        if not (0.0 <= self.arm_floor and
+                MAX_SEND_ARMS * self.arm_floor <= self.p_min + _EPS):
+            raise ValueError(
+                f"arm_floor inválido: exige 0 <= arm_floor <= p_min/{MAX_SEND_ARMS} "
+                f"= {self.p_min / MAX_SEND_ARMS:g}, recebido {self.arm_floor}. Para um "
+                f"piso maior, suba também SPYNO_CLIP_MIN")
 
     @classmethod
     def from_config(cls, cfg) -> "ClipConfig":
-        return cls(p_min=cfg.clip_min, p_max=cfg.clip_max, arm_mix=cfg.arm_mix)
+        return cls(p_min=cfg.clip_min, p_max=cfg.clip_max, arm_mix=cfg.arm_mix,
+                   arm_floor=cfg.arm_floor)
 
     def tag(self) -> str:
-        return f"clip[{self.p_min:g},{self.p_max:g}]mix{self.arm_mix:g}"
+        return (f"clip[{self.p_min:g},{self.p_max:g}]mix{self.arm_mix:g}"
+                f"floor{self.arm_floor:.6g}")
+
+    def min_send_arm_prob(self, n_send: int) -> float:
+        """Menor π(k) garantido a um braço de envio quando |S| = n_send."""
+        if n_send == 1:
+            return self.p_min
+        return max(self.arm_floor, self.p_min * self.arm_mix / n_send)
+
+    def max_importance_weight(self, n_send: int = MAX_SEND_ARMS) -> float:
+        """Maior peso π_alvo(a)/π(a) possível para uma política-alvo qualquer.
+
+        O pior caso é um alvo determinístico que escolhe sempre o braço de menor
+        probabilidade garantida: um braço de envio (piso) ou a abstenção
+        (1 − p_max).
+        """
+        return 1.0 / min(self.min_send_arm_prob(n_send), 1.0 - self.p_max)
+
+
+def _apply_floor(mass: float, share: np.ndarray, floor: float) -> np.ndarray:
+    """Reparte `mass` em proporção a `share` com piso `floor` por braço.
+
+    Water-filling: fixa no piso os braços que ficariam abaixo dele e redistribui
+    o resto entre os demais, na proporção de `share`, até ninguém ficar abaixo.
+    Termina em no máximo len(share) passos. Exige len(share)·floor <= mass.
+    """
+    out = mass * share
+    if floor <= 0.0:
+        return out
+    fixed = np.zeros(len(share), dtype=bool)
+    for _ in range(len(share)):
+        low = (~fixed) & (out < floor)
+        if not low.any():
+            break
+        fixed |= low
+        free = ~fixed
+        rest = mass - floor * fixed.sum()
+        out = np.where(fixed, floor, 0.0)
+        if free.any():
+            w = share[free]
+            out[free] = rest * (w / w.sum() if w.sum() > 0 else np.full(free.sum(), 1.0 / free.sum()))
+    return out
 
 
 def clip_distribution(wins: np.ndarray, send_arms: tuple[int, ...],
                       clip: ClipConfig) -> np.ndarray:
-    """Aplica os passos 2 a 4 do esquema a uma contagem (ou distribuição) do TS."""
+    """Aplica os passos 2 a 5 do esquema a uma contagem (ou distribuição) do TS."""
     wins = np.asarray(wins, dtype=float)
     total = wins.sum()
     if total <= 0:
@@ -91,7 +166,7 @@ def clip_distribution(wins: np.ndarray, send_arms: tuple[int, ...],
 
     out = np.zeros(N_ARMS)
     out[0] = 1.0 - p_send
-    out[send] = p_send * share
+    out[send] = _apply_floor(p_send, share, clip.arm_floor)
     return out / out.sum()
 
 

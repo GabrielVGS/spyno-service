@@ -137,6 +137,107 @@ def test_clip_config_invalida(p_min, p_max, mix):
         ClipConfig(p_min, p_max, mix)
 
 
+# ---- 1b. piso explícito por braço de envio (contrato 2.1) -------------------
+
+#: Distribuições do TS que estressam o piso: tudo num braço, nada de envio,
+#: interior, empates, um braço de envio zerado.
+_WINS = [(0, 0, 0, 100), (100, 0, 0, 0), (0, 100, 0, 0), (50, 10, 10, 30),
+         (5, 90, 5, 0), (1, 1, 1, 1), (99, 0, 0, 1), (0, 33, 33, 34), (10, 0, 90, 0)]
+_CLIPS = [ClipConfig(), ClipConfig(0.1, 0.9, 0.1, 0.0), ClipConfig(0.3, 0.9, 0.1, 0.1),
+          ClipConfig(0.2, 0.8, 0.5, 0.05), ClipConfig(0.1, 0.9, 1.0, 1 / 30)]
+
+
+def test_padrao_do_piso_e_p_min_sobre_tres():
+    from spyno_service.config import Config
+
+    assert ClipConfig().arm_floor == pytest.approx(0.1 / 3)
+    assert Config().arm_floor == pytest.approx(ClipConfig().arm_floor)
+    assert ClipConfig.from_config(Config()) == ClipConfig()
+
+
+@pytest.mark.parametrize("clip", _CLIPS, ids=lambda c: c.tag())
+@pytest.mark.parametrize("wins", _WINS)
+def test_piso_soma_e_propensao_positiva(clip, wins):
+    pi = clip_distribution(np.array(wins, dtype=float), (1, 2, 3), clip)
+    assert pi.sum() == pytest.approx(1.0, abs=1e-12)
+    assert (pi > 0).all(), "propensão nula quebra a OPE"
+    assert pi[1:].min() >= clip.min_send_arm_prob(3) - 1e-12
+    assert pi[1:].min() >= clip.arm_floor - 1e-12
+    assert clip.p_min - 1e-12 <= pi[1:].sum() <= clip.p_max + 1e-12
+    # o piso não mexe na massa de envio do passo 2
+    raw = np.array(wins, dtype=float) / sum(wins)
+    assert pi[1:].sum() == pytest.approx(np.clip(raw[1:].sum(), clip.p_min, clip.p_max))
+    # peso de importância de qualquer alvo determinístico
+    assert (1.0 / pi).max() <= clip.max_importance_weight(3) + 1e-9
+
+
+def test_piso_eleva_so_os_bracos_abaixo_dele():
+    sem = ClipConfig(0.1, 0.9, 0.1, 0.0)
+    com = ClipConfig(0.1, 0.9, 0.1, 1 / 30)
+    w = np.array([0, 0, 0, 100.0])
+    a, b = clip_distribution(w, (1, 2, 3), sem), clip_distribution(w, (1, 2, 3), com)
+    assert a[1] == pytest.approx(0.9 * 0.1 / 3)           # 0,03 < piso
+    assert b[1] == pytest.approx(1 / 30) == pytest.approx(b[2])
+    assert b[3] == pytest.approx(0.9 - 2 / 30)
+    assert b[0] == pytest.approx(a[0])
+    # interior longe do piso: nada muda
+    w = np.array([50.0, 10, 10, 30])
+    np.testing.assert_allclose(clip_distribution(w, (1, 2, 3), sem),
+                               clip_distribution(w, (1, 2, 3), com))
+
+
+def test_piso_na_massa_minima_reparte_uniforme():
+    """Com f = p_min/3 e P(enviar) no mínimo, os três braços ficam exatamente em f.
+
+    É o custo do padrão: no piso de envio a política não expressa preferência
+    entre braços.
+    """
+    pi = clip_distribution(np.array([100.0, 0, 0, 5]), (1, 2, 3), ClipConfig())
+    np.testing.assert_allclose(pi[1:], 1 / 30)
+
+
+def test_peso_maximo_reportado():
+    assert ClipConfig(0.1, 0.9, 0.1, 0.0).max_importance_weight(3) == pytest.approx(300.0)
+    assert ClipConfig().max_importance_weight(3) == pytest.approx(30.0)
+    assert ClipConfig(0.3, 0.9, 0.1, 0.1).max_importance_weight(3) == pytest.approx(10.0)
+    # binário: o único braço de envio tem p_min; o pior caso é a abstenção
+    assert ClipConfig().max_importance_weight(1) == pytest.approx(10.0)
+
+
+@pytest.mark.parametrize("floor", [-0.01, 0.04, 0.1])
+def test_piso_invalido(floor):
+    with pytest.raises(ValueError, match="arm_floor"):
+        ClipConfig(0.1, 0.9, 0.1, floor)
+
+
+def test_piso_maior_exige_subir_p_min():
+    ClipConfig(0.3, 0.9, 0.1, 0.1)          # válido
+
+
+def test_sorteio_respeita_o_piso():
+    pol = ClippedPolicy(Recorder(wins=(0, 0, 0, 10)), ClipConfig(), n_samples=1, seed=5)
+    arms = np.array([pol.decide_with_distribution("u", _context(), True)[0]
+                     for _ in range(20000)])
+    for k in (1, 2):
+        assert np.mean(arms == k) == pytest.approx(1 / 30, abs=0.006)
+
+
+def test_piso_muda_a_policy_version():
+    from spyno_service.policies.registry import version
+
+    a = version(bandit.ts_hybrid(clip=ClipConfig(0.1, 0.9, 0.1, 0.0), n_samples=100))
+    b = version(bandit.ts_hybrid(clip=ClipConfig(), n_samples=100))
+    assert a != b
+    assert a.startswith("ts_hybrid-v2-") and b.startswith("ts_hybrid-v2-")
+
+
+def test_ts_binary_e_ts_disjoint_tem_versoes_distintas():
+    from spyno_service.policies.registry import version
+
+    assert version(bandit.ts_binary(clip=CLIP, n_samples=10)) != \
+        version(bandit.ts_disjoint(clip=CLIP, n_samples=10))
+
+
 def test_acao_e_sorteada_da_distribuicao_registrada():
     pol = ClippedPolicy(Recorder(wins=(0, 0, 0, 10)), CLIP, n_samples=1, seed=3)
     arms = [pol.decide_with_distribution("u", _context(), True)[0] for _ in range(4000)]
@@ -518,6 +619,9 @@ def test_contrato_expoe_janela_e_versao(tmp_path):
         assert info["policy_version"] == c.app.state.ctx["policy_version"]
         assert info["features"] == list(FEATURES)
         assert info["clip_min"] == pytest.approx(0.1)
+        assert info["contract_version"] == "2.1"
+        assert info["arm_floor"] == pytest.approx(1 / 30)
+        assert info["max_importance_weight"] == pytest.approx(30.0)
 
 
 def test_decision_id_deduplica_pela_hora(tmp_path):

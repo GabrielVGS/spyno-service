@@ -27,11 +27,15 @@ class Config:
     propensity_samples: int = int(os.getenv("SPYNO_PROPENSITY_SAMPLES", "1000"))
 
     #: Probability clipping (esquema v2): P(enviar) fica em [clip_min, clip_max]
-    #: nos pontos elegíveis, e cada braço de envio recebe ao menos a fração
-    #: arm_mix/|S| da massa de envio. Ver policies/clipping.py.
+    #: nos pontos elegíveis; a massa de envio é repartida com mistura uniforme
+    #: arm_mix e cada braço de envio recebe ao menos arm_floor (probabilidade
+    #: absoluta; exige 3·arm_floor <= clip_min). O peso de importância máximo
+    #: de um alvo determinístico fica em 1/min(arm_floor, 1 - clip_max): 30 no
+    #: padrão. Ver policies/clipping.py e o README.
     clip_min: float = float(os.getenv("SPYNO_CLIP_MIN", "0.1"))
     clip_max: float = float(os.getenv("SPYNO_CLIP_MAX", "0.9"))
     arm_mix: float = float(os.getenv("SPYNO_ARM_MIX", "0.1"))
+    arm_floor: float = float(os.getenv("SPYNO_ARM_FLOOR", repr(1.0 / 30.0)))
 
     #: Janela de atribuição do desfecho, em minutos.
     outcome_window_min: int = int(os.getenv("SPYNO_OUTCOME_WINDOW_MIN", "180"))

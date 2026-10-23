@@ -21,7 +21,7 @@ de correção: propensão registrada corretamente, decisão reproduzível a part
 log, atribuição de desfecho auditável e modo de observação que impeça qualquer
 envio acidental. Fila distribuída torna essas quatro mais difíceis de verificar.
 
-## Contrato (versão 2, esquema de política `v2`)
+## Contrato (versão 2.1, esquema de política `v2`)
 
 Todos os `/v1/*`, exceto `GET /v1/contract`, exigem
 `Authorization: Bearer <SPYNO_DECISION_TOKEN>` (comparação em tempo constante).
@@ -31,7 +31,7 @@ desenvolvimento. `GET /health` também é aberto.
 
 | | |
 |---|---|
-| `GET /v1/contract` | `policy_version`, `outcome_window_min`, features, braços, clipping, guardrails. O backend lê na subida e recusa iniciar se divergir da configuração dele |
+| `GET /v1/contract` | `policy_version`, `outcome_window_min`, features, braços, clipping (inclusive `arm_floor` e `max_importance_weight`, desde a 2.1), guardrails. O backend lê na subida e recusa iniciar se divergir da configuração dele |
 | `POST /v1/decide` | contexto do ponto de decisão → ação recomendada e executada, `decision_id`, versão, propensões, distribuição clipada |
 | `POST /v1/feedback` | `decision_id` + desfecho, aplicado uma única vez |
 | `POST /v1/end-day` | `{"date": "AAAA-MM-DD"}` (data local). O backend chama uma vez por dia; ajusta a posterior com o buffer do dia e o esvazia. Idempotente por data |
@@ -49,9 +49,10 @@ Garantias:
   guardrail não é uma abstenção escolhida pela política.
 - **Probability clipping e propensão exata.** Nos pontos elegíveis, P(enviar)
   fica em `[SPYNO_CLIP_MIN, SPYNO_CLIP_MAX]` (padrão [0,1; 0,9]) e cada braço de
-  envio recebe ao menos `SPYNO_ARM_MIX`/3 da massa de envio. A ação é sorteada
-  dessa distribuição, e a propensão registrada é exatamente a dela, nunca 0.
-  O esquema completo está em `spyno_service/policies/clipping.py`.
+  envio tem probabilidade de pelo menos `SPYNO_ARM_FLOOR` (padrão 1/30 ≈ 0,0333;
+  ver abaixo). A ação é sorteada dessa distribuição, e a propensão registrada é
+  exatamente a dela, nunca 0. O esquema completo está em
+  `spyno_service/policies/clipping.py`.
   `recommended_propensity` é P(ação recomendada); `propensity` é P(ação
   executada) sob o processo de coleta, que vale 1 quando guardrail ou shadow
   forçam a abstenção.
@@ -72,6 +73,45 @@ Garantias:
   com `counter_basis`.
 - **Contingência registrada.** Falha ou estouro de tempo limite cai na regra
   conservadora, marcada com `propensity_method="fallback"`.
+
+### Piso por braço e peso de importância (contrato 2.1)
+
+Na v2 original a massa de envio era clipada em [0,1; 0,9] e repartida entre os
+três braços com mistura uniforme η = `SPYNO_ARM_MIX` = 0,1. Isso deixava um piso
+de p_min·η/3 ≈ 0,0033 por braço: para uma política-alvo que escolhe sempre um
+braço específico, o peso de importância π_alvo/π_log chegava a ~300, e a OPE
+sobre os logs do serviço ficaria com variância enorme.
+
+Desde a 2.1 há um piso explícito f = `SPYNO_ARM_FLOOR` por braço de envio,
+aplicado depois do clip da massa total: os braços abaixo de f sobem para f e os
+demais repartem o resto na mesma proporção (water-filling). A massa de envio, e
+portanto a soma 1 e P(enviar) ∈ [p_min, p_max], não mudam. Com isso, o peso
+máximo para qualquer alvo determinístico é 1/min(f, 1 − p_max), exposto em
+`/v1/contract` como `max_importance_weight`.
+
+| configuração | P(enviar) mínima | π mínima por braço | peso máximo |
+|---|---|---|---|
+| v2 sem piso (`SPYNO_ARM_FLOOR=0`) | 0,1 | 0,0033 | ~300 |
+| **padrão**: f = p_min/3 = 1/30 | 0,1 | 0,0333 | **30** |
+| `SPYNO_CLIP_MIN=0.3 SPYNO_ARM_FLOOR=0.1` | 0,3 | 0,1 | 10 |
+
+O padrão é f = p_min/3 porque é o maior piso que **não aumenta a exploração
+mínima**: P(enviar) ≥ 0,1 continua sendo o único custo fixo, e o peso cai de ~300
+para 30 (um fator 10). Pesos ≤ 10 exigiriam f = 0,1 por braço e, com três braços,
+P(enviar) ≥ 0,3 em toda hora elegível. Com 16 pontos horários fora do silêncio
+(22h–6h), isso dá ≥ 4,8 envios esperados por dia antes de cota e intervalo, contra
+≥ 1,6 no padrão: a cota diária de 3 se esgotaria quase todo dia só por exploração,
+um custo de fadiga que não se justifica antes de haver dados reais. Por isso o serviço exige
+3·f ≤ p_min e recusa subir; quem quiser pesos menores sobe os dois juntos.
+
+O custo do padrão: quando a massa de envio está no mínimo (0,1), os três braços
+ficam exatamente em 1/30 e a política não expressa preferência entre eles; acima
+do mínimo, só os braços que ficariam abaixo de 1/30 são afetados. A abstenção
+tem piso 1 − p_max = 0,1 (peso ≤ 10). Na `ts_binary` (um braço de envio) o piso
+é redundante: o braço já recebe a massa toda, ≥ p_min.
+
+Mudar `SPYNO_ARM_FLOOR` muda a `policy_version` (o clipping entra no hash), e
+decisões da versão anterior ficam no log sem treinar a nova.
 
 Contexto: `notifs_today` é a contagem bruta do dia (o guardrail compara com
 `SPYNO_DAILY_CAP`); a política a vê ÷ 5, como no simulador. `fbm_obs` continua

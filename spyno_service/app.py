@@ -25,7 +25,7 @@ from .policies.registry import available, build, version
 from .store import Store, make_decision_id
 
 #: Versão do contrato HTTP. O backend confere em GET /v1/contract.
-CONTRACT_VERSION = "2"
+CONTRACT_VERSION = "2.1"
 
 _PROPOSED = ("notifs_today", "fatigue", "minutes_since_last")
 
@@ -103,6 +103,9 @@ def create_app(policy=None, store=None, config=None) -> FastAPI:
         """Sem autenticação: o backend lê na subida e recusa iniciar se divergir."""
         ctx = request.app.state.ctx
         c = ctx["config"]
+        pol = ctx["policy"]
+        w_max = (pol.clip.max_importance_weight(len(pol.send_arms))
+                 if isinstance(pol, ClippedPolicy) else None)
         return ContractInfo(
             contract_version=CONTRACT_VERSION,
             policy=c.policy,
@@ -113,6 +116,7 @@ def create_app(policy=None, store=None, config=None) -> FastAPI:
             features=list(FEATURES),
             arms=list(ARMS),
             clip_min=c.clip_min, clip_max=c.clip_max, arm_mix=c.arm_mix,
+            arm_floor=c.arm_floor, max_importance_weight=w_max,
             daily_cap=c.daily_cap, cooldown_min=c.cooldown_min,
             quiet_start_h=c.quiet_start_h, quiet_end_h=c.quiet_end_h,
         )

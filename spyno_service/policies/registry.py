@@ -67,6 +67,7 @@ def version(policy: Policy) -> str:
     parts = [POLICY_SCHEMA, type(policy).__name__, getattr(policy, "name", "?")]
     if isinstance(policy, ClippedPolicy):
         parts.append(policy.clip.tag())
+        parts.append("send" + "".join(map(str, policy.send_arms)))
         parts.append(f"n{policy.n_samples}")
     snap = getattr(policy, "snapshot", None)
     if callable(snap):
