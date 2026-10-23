@@ -106,9 +106,18 @@ um custo de fadiga que não se justifica antes de haver dados reais. Por isso o 
 
 O custo do padrão: quando a massa de envio está no mínimo (0,1), os três braços
 ficam exatamente em 1/30 e a política não expressa preferência entre eles; acima
-do mínimo, só os braços que ficariam abaixo de 1/30 são afetados. A abstenção
-tem piso 1 − p_max = 0,1 (peso ≤ 10). Na `ts_binary` (um braço de envio) o piso
-é redundante: o braço já recebe a massa toda, ≥ p_min.
+do mínimo, os braços que ficariam abaixo de 1/30 sobem para 1/30 e os demais
+perdem essa massa na mesma proporção entre si (a razão entre eles se mantém).
+Se nenhum braço está abaixo do piso, nada muda. A abstenção tem piso
+1 − p_max = 0,1 (peso ≤ 10). Na `ts_binary` (um braço de envio) o piso é
+redundante: o braço já recebe a massa toda, ≥ p_min. O peso máximo vale para
+alvos com suporte em {0} ∪ S; na `ts_binary`, um alvo que use os braços 1 ou 2
+tem peso infinito, porque eles têm π = 0.
+
+**Migração.** O padrão de `SPYNO_ARM_FLOOR` (1/30) supõe `SPYNO_CLIP_MIN` ≥ 0,1.
+Quem usa `SPYNO_CLIP_MIN` < 0,1 precisa definir `SPYNO_ARM_FLOOR` ≤
+`SPYNO_CLIP_MIN`/3 (por exemplo 0,05/3 para `SPYNO_CLIP_MIN=0.05`), ou `0` para
+o comportamento da v2 sem piso; senão o serviço recusa a configuração na subida.
 
 Mudar `SPYNO_ARM_FLOOR` muda a `policy_version` (o clipping entra no hash), e
 decisões da versão anterior ficam no log sem treinar a nova.

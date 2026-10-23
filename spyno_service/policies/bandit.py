@@ -168,7 +168,11 @@ def _serve(cls, name, cost, seed, snapshot, clip, n_samples):
     _restore(policy, snapshot)
     clip = clip or ClipConfig.from_config(CONFIG)
     n = n_samples or CONFIG.propensity_samples
-    return ClippedPolicy(_CompatibilidadeHerdada(policy), clip, n, seed=seed + 1)
+    served = ClippedPolicy(_CompatibilidadeHerdada(policy), clip, n, seed=seed + 1)
+    # O `name` das classes herdadas é "ts" tanto na binária quanto na disjoint;
+    # o nome da fábrica é o que entra no prefixo da policy_version.
+    served.name = name
+    return served
 
 
 def ts_hybrid(cost: float = 0.05, seed: int = 0, snapshot: str | Path | None = None,

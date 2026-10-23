@@ -161,8 +161,10 @@ class ContractInfo(BaseModel):
     arm_mix: float
     #: Piso de π(k) por braço de envio (desde o contrato 2.1).
     arm_floor: float
-    #: Maior peso de importância possível para um alvo qualquer, dado o
-    #: clipping da política ativa; None se ela não é clipada (never, always).
+    #: Maior peso de importância para alvos com suporte em {0} ∪ S (S = braços
+    #: de envio da política ativa), dado o clipping dela; fora desse suporte o
+    #: peso é infinito (ts_binary: braços 1 e 2). None se a política não é
+    #: clipada (never, always).
     max_importance_weight: float | None
     daily_cap: int
     cooldown_min: int

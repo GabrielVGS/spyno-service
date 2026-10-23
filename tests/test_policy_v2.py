@@ -234,8 +234,16 @@ def test_piso_muda_a_policy_version():
 def test_ts_binary_e_ts_disjoint_tem_versoes_distintas():
     from spyno_service.policies.registry import version
 
-    assert version(bandit.ts_binary(clip=CLIP, n_samples=10)) != \
-        version(bandit.ts_disjoint(clip=CLIP, n_samples=10))
+    b = version(bandit.ts_binary(clip=CLIP, n_samples=10))
+    d = version(bandit.ts_disjoint(clip=CLIP, n_samples=10))
+    assert b != d
+    assert b.startswith("ts_binary-v2-") and d.startswith("ts_disjoint-v2-")
+
+
+def test_peso_maximo_da_binaria_so_vale_no_suporte():
+    pi = clip_distribution(np.array([100.0, 0, 0, 0]), (3,), ClipConfig())
+    assert pi[1] == pi[2] == 0.0, "fora de {0} ∪ S o peso é infinito"
+    assert (1.0 / pi[[0, 3]]).max() <= ClipConfig().max_importance_weight(1) + 1e-9
 
 
 def test_acao_e_sorteada_da_distribuicao_registrada():

@@ -112,11 +112,12 @@ class ClipConfig:
         return max(self.arm_floor, self.p_min * self.arm_mix / n_send)
 
     def max_importance_weight(self, n_send: int = MAX_SEND_ARMS) -> float:
-        """Maior peso π_alvo(a)/π(a) possível para uma política-alvo qualquer.
+        """Maior peso π_alvo(a)/π(a) para alvos com suporte em {0} ∪ S.
 
         O pior caso é um alvo determinístico que escolhe sempre o braço de menor
         probabilidade garantida: um braço de envio (piso) ou a abstenção
-        (1 − p_max).
+        (1 − p_max). Fora de {0} ∪ S o peso é infinito: na `ts_binary`
+        (S = {3}) os braços 1 e 2 têm π = 0.
         """
         return 1.0 / min(self.min_send_arm_prob(n_send), 1.0 - self.p_max)
 
