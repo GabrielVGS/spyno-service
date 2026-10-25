@@ -13,6 +13,13 @@ Uso (na raiz do spyno-service):
     python3 demo/run_demo.py                 # shadow (padrão)
     python3 demo/run_demo.py --sem-shadow    # envio real, entrega FCM simulada
     python3 demo/run_demo.py --manter        # não derruba os contêineres no fim
+    python3 demo/run_demo.py --warmstart --reiniciar   # warm-start + reinício
+
+Em shadow (padrão) a posterior fica congelada (contrato 2.3): a demo confere que
+o digest não muda no dia nem no end-day e, com --reiniciar, que o serviço
+reiniciado em shadow e depois recriado fora do shadow carrega exatamente a
+posterior inicial. Com --sem-shadow, a posterior muda no end-day e é a
+persistida que volta no reinício.
 
 Só usa a biblioteca padrão. Requer docker com compose v2.
 """
@@ -221,7 +228,8 @@ def main() -> int:
     ap.add_argument("--warmstart", action="store_true",
                     help="serviço sobe com SPYNO_WARMSTART_SNAPSHOT (warmstart/ts_hybrid-v2-c0.05.json)")
     ap.add_argument("--reiniciar", action="store_true",
-                    help="depois do end-day, reinicia o contêiner decision e confere a posterior persistida")
+                    help="depois do end-day, reinicia o contêiner decision e confere a posterior "
+                         "carregada (em shadow, também o recria com SPYNO_SHADOW=0)")
     args = ap.parse_args()
 
     ENV = carregar_env()
@@ -364,6 +372,9 @@ def main() -> int:
                            "using (id_usuario) order by n.decidida_em, n.id_usuario")
         decisoes = psql_json("spyno_decision", "select * from decisions order by decision_point, user_key")
         dias = psql_json("spyno_decision", "select * from policy_days order by day")
+        posteriores = psql_json("spyno_decision", "select policy_version, day, digest "
+                                "from policy_posteriors order by saved_at")
+        _, health = http("GET", f"{svc}/health")
 
         # end-day repetido direto no serviço: idempotente, posterior intacta.
         _, antes_rep = http("GET", f"{svc}/v1/policy-state", headers=bearer)
@@ -377,8 +388,9 @@ def main() -> int:
             esperar(lambda: http("GET", f"{svc}/health")[0] == 200, "o serviço reiniciado")
             _, apos = http("GET", f"{svc}/v1/policy-state", headers=bearer)
             reinicio = {"antes": depois_rep, "depois": apos}
-            (OUT / "reinicio.json").write_text(json.dumps(reinicio, indent=1, default=str))
-            confere("reinício: posterior_source = persisted", apos.get("posterior_source") == "persisted",
+            # Em shadow nada é persistido: o reinício volta ao estado inicial.
+            fonte = init_esperado if shadow else "persisted"
+            confere(f"reinício: posterior_source = {fonte}", apos.get("posterior_source") == fonte,
                     f"source={apos.get('posterior_source')}, dia={apos.get('persisted_day')}")
             confere("reinício: mesmo digest da posterior",
                     apos.get("posterior_digest") == depois_rep.get("posterior_digest"),
@@ -388,12 +400,32 @@ def main() -> int:
                     apos.get("policy_version", ""))
             confere(f"reinício: posterior_init = {init_esperado}",
                     apos.get("posterior_init") == init_esperado)
+            if shadow:
+                print("== Saída do shadow: decision recriado com SPYNO_SHADOW=0")
+                compose("up", "-d", "--wait", "--force-recreate", "--no-deps", "decision",
+                        extra={"DEMO_SHADOW": "0"})
+                esperar(lambda: http("GET", f"{svc}/health")[0] == 200, "o serviço fora do shadow")
+                _, saida = http("GET", f"{svc}/v1/policy-state", headers=bearer)
+                _, h_saida = http("GET", f"{svc}/health")
+                reinicio["fora_do_shadow"] = {"policy_state": saida, "health": h_saida}
+                confere("saída do shadow: aprendizado ativo (shadow=false, learning_frozen=false)",
+                        h_saida.get("shadow") is False and h_saida.get("learning_frozen") is False
+                        and saida.get("learning_frozen") is False)
+                confere("saída do shadow: posterior = a inicial (digest da subida, mesma origem)",
+                        saida.get("posterior_digest") == estado0.get("posterior_digest")
+                        and saida.get("posterior_source") == init_esperado,
+                        f"{estado0.get('posterior_digest')} -> {saida.get('posterior_digest')}, "
+                        f"source={saida.get('posterior_source')}")
+                confere("saída do shadow: mesma policy_version",
+                        saida.get("policy_version") == estado0.get("policy_version"))
+            (OUT / "reinicio.json").write_text(json.dumps(reinicio, indent=1, default=str))
 
         exportar(notifs, decisoes, dias, treinos_feitos, historico_posterior, usuarios)
 
         print("== Verificação do contrato")
         verificar(confere, contrato, notifs, decisoes, dias, usuarios, historico_posterior,
-                  estado0, (s, rep, antes_rep, depois_rep), log_api, log_svc, shadow)
+                  estado0, (s, rep, antes_rep, depois_rep), log_api, log_svc, shadow,
+                  posteriores, health)
 
         resumo = resumir(notifs, decisoes, dias, treinos_feitos, contrato, shadow, tick_ms)
         resumo["verificacao"] = checks
@@ -464,7 +496,7 @@ def exportar(notifs, decisoes, dias, treinos, historico_posterior, usuarios):
 # ---- verificação ---------------------------------------------------------------
 
 def verificar(confere, contrato, notifs, decisoes, dias, usuarios, posterior, estado0,
-              endday_rep, log_api, log_svc, shadow):
+              endday_rep, log_api, log_svc, shadow, posteriores, health):
     segredo = ENV["DEMO_USER_KEY_SECRET"].encode()
     chave = {u["id"]: hmac.new(segredo, str(u["id"]).encode(), hashlib.sha256).hexdigest()
              for u in usuarios}
@@ -555,11 +587,38 @@ def verificar(confere, contrato, notifs, decisoes, dias, usuarios, posterior, es
     confere("end-day repetido não muda a posterior",
             antes["posterior_digest"] == depois["posterior_digest"])
 
-    # Posterior alterada pelo end-day.
     antes_d = [p for p in posterior if dia_d not in {x["day"] for x in p["days_closed"]}]
     depois_d = [p for p in posterior if dia_d in {x["day"] for x in p["days_closed"]}]
     n_upd = dias_fechados.get(dia_d, {}).get("updates_applied", 0)
-    if antes_d and depois_d:
+    if shadow:
+        # Contrato 2.3: em shadow a posterior está congelada.
+        digests = {p["posterior_digest"] for p in posterior} | {depois["posterior_digest"]}
+        confere("shadow: learning_frozen no contrato, no /health e no /v1/policy-state",
+                contrato.get("learning_frozen") is True and health.get("learning_frozen") is True
+                and all(p.get("learning_frozen") is True for p in posterior),
+                f"contract_version={contrato.get('contract_version')}")
+        confere("shadow: digest da posterior constante no dia, no end-day e no repetido",
+                bool(antes_d and depois_d) and digests == {estado0["posterior_digest"]},
+                f"{len(digests)} digest(s): {sorted(digests)}")
+        confere("shadow: end-day fecha o dia com 0 updates e nenhum pendente",
+                dia_d in dias_fechados and n_upd == 0
+                and all(p["pending_updates"] == 0 for p in posterior), f"{n_upd} updates")
+        confere("shadow: nenhuma posterior gravada em policy_posteriors", posteriores == [],
+                json.dumps(posteriores))
+        congeladas = [d for d in decisoes if d["outcome"] in ("responded", "not_responded")
+                      and d["update_eligible"]]
+        confere("shadow: nenhum desfecho treinou; os treináveis com motivo decisao_em_shadow_congelado",
+                not any(d["trained"] for d in decisoes) and congeladas
+                and all(d["train_skip_reason"] == "decisao_em_shadow_congelado" for d in congeladas),
+                f"{len(congeladas)} treináveis congelados")
+        confere("shadow: learning_frozen em todas as decisões do log",
+                all(d["learning_frozen"] is True for d in decisoes), f"{len(decisoes)} decisões")
+        confere("shadow: update_eligible preservado no log (seleção para a OPE)",
+                any(n["atualiza_politica"] for n in notifs)
+                and all(bool(n["atualiza_politica"]) == bool(por_id[n["decision_id"]]["update_eligible"])
+                        for n in notifs),
+                f"{sum(1 for n in notifs if n['atualiza_politica'])} pontos treináveis")
+    elif antes_d and depois_d:
         a, b = antes_d[-1], depois_d[0]
         confere("posterior alterada pelo end-day (hash antes != depois)",
                 n_upd > 0 and a["posterior_digest"] != b["posterior_digest"],
@@ -568,6 +627,11 @@ def verificar(confere, contrato, notifs, decisoes, dias, usuarios, posterior, es
         mudou_no_dia = {p["posterior_digest"] for p in antes_d if p["sim"] >= INICIO_SIM.isoformat()}
         confere("posterior só muda no end-day (feedback só acumula)", len(mudou_no_dia) <= 1,
                 f"{len(mudou_no_dia)} hashes durante o dia")
+        confere("sem shadow: learning_frozen = false (contrato, /health e decisões)",
+                contrato.get("learning_frozen") is False and health.get("learning_frozen") is False
+                and all(d["learning_frozen"] is False for d in decisoes))
+        confere("sem shadow: posterior do dia gravada em policy_posteriors",
+                [p["day"] for p in posteriores] == [dia_d], json.dumps(posteriores))
     else:
         confere("posterior alterada pelo end-day", False, "sem observações antes/depois")
     trained_total = sum(1 for d in decisoes if d["trained"])

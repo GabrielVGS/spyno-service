@@ -18,9 +18,13 @@ python3 demo/run_demo.py --warmstart --reiniciar   # warm-start + reinício do s
 `--warmstart` sobe o serviço com `SPYNO_WARMSTART_SNAPSHOT` apontando para o
 artefato versionado. Sem a opção, o serviço começa do prior, e a demo confere
 `posterior_init` no contrato nos dois casos. `--reiniciar` reinicia o contêiner
-`decision` depois do end-day e confere quatro coisas: `posterior_source =
-persisted`, o mesmo digest em `/v1/policy-state`, a mesma `policy_version` e o
-mesmo `posterior_init`. A saída vai para `demo/out/<modo>[-warmstart][-reinicio]/`.
+`decision` depois do end-day e confere quatro coisas: `posterior_source`, o
+mesmo digest em `/v1/policy-state`, a mesma `policy_version` e o mesmo
+`posterior_init`. Fora do shadow a origem esperada é `persisted`. Em shadow a
+posterior está congelada (contrato 2.3) e nada é persistido, então a origem
+esperada é a inicial (`warmstart` ou `prior`); depois o roteiro recria o
+`decision` com `SPYNO_SHADOW=0` e confere a saída do shadow: aprendizado ativo,
+mesma `policy_version` e exatamente o digest da subida. A saída vai para `demo/out/<modo>[-warmstart][-reinicio]/`.
 
 Uma execução leva uns 3 minutos (a maior parte é o build). Termina com
 `TUDO OK` ou com a lista de falhas e código de saída 1.
@@ -99,8 +103,15 @@ simulada.
   fechamento da janela.
 - `end-day`: chamado uma vez na virada. Repetido, devolve `already_closed` e
   não muda a posterior.
-- A posterior muda no `end-day` e só nele. O número de updates aplicados é
-  igual ao de desfechos que treinaram até a virada.
+- Fora do shadow, a posterior muda no `end-day` e só nele, e é gravada em
+  `policy_posteriors`. O número de updates aplicados é igual ao de desfechos
+  que treinaram até a virada.
+- Em shadow (contrato 2.3), a posterior fica congelada: `learning_frozen` no
+  contrato, no `/health`, no `/v1/policy-state` e em todas as decisões; um só
+  digest do início ao fim (dia, end-day e end-day repetido); end-day com 0
+  updates; nada em `policy_posteriors`; nenhum desfecho treina, e os treináveis
+  ficam com `train_skip_reason = decisao_em_shadow_congelado`; `update_eligible`
+  continua no log, igual nos dois lados.
 - Shadow: nada é executado e `counter_basis` é `proposed` em todas as decisões.
   O contexto gravado é igual ao recebido pelo serviço. Contadores e `eligible`,
   recalculados a partir do próprio log, batem com o que foi enviado.
