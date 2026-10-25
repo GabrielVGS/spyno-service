@@ -149,21 +149,55 @@ SPYNO_SIM_PATH=../spyno-sim .venv/bin/python training/build_warmstart.py \
 mais o viés). As classes do `spyno-decision` vetorizam 16 posições, e o
 adaptador entrega `location_home`, `motion_stationary` e `fbm_obs` sempre
 zerados. O warm-start é feito **nesse mesmo vetor**: as linhas do simulador têm
-as três colunas zeradas (`bandit.warm_start_rows`), e um teste confere que a
-mesma hora vinda do simulador e vinda do backend dá o mesmo vetor. As linhas do
-rollout já trazem `notifs_today` ÷ 5, então não passam por `policy_obs`. Com as
-colunas zeradas, os pesos dessas três posições ficam no prior.
+as três colunas zeradas (`bandit.warm_start_rows`). As linhas do rollout já
+trazem `notifs_today` ÷ 5, então não passam por `policy_obs`. Com as colunas
+zeradas, os pesos dessas três posições ficam no prior. Um teste confere que a
+mesma observação dá o mesmo vetor depois do adaptador (contexto do contrato,
+`notifs_today` bruto) e depois de `warm_start_rows` (linha do simulador,
+`notifs_today` ÷ 5). Ele cobre só essa transformação, os zeros e o ÷ 5. Não
+mostra que o backend calcula as features como o simulador; ver abaixo.
+
+**Identidade da linhagem.** Quem identifica a linhagem é a `policy_version`, não
+o `warmstart_sha256`. O sha256 é do arquivo inteiro, proveniência incluída:
+regerar o artefato em outro commit muda o sha256, mas mantém m, q e, portanto, a
+`policy_version`, e a posterior persistida continua valendo.
 
 **O que o warm-start não é.** O +0,36 E[treinos]/usuário/semana do RQ2 (warm −
-cold, sintético) foi medido com o TS *disjoint* com c = 0,03, `fbm_obs` e
-sensores com os valores do simulador. A configuração servida (TS híbrido, c =
-0,05, três colunas zeradas) não foi medida nesse contraste. Apoiam a escolha as
-ablações em que zerar `fbm_obs` (híbrido, c = 0,05) e zerar os sensores dão
-diferença n.s. Essas ablações não provam equivalência. O warm-start é
-**sintético**: vem do simulador e de fórmulas de feature do simulador.
-`fbm_obs` não entra, mas `fatigue`, `recency` e a elegibilidade (teto de 5
-envios/dia no simulador, contra cota 3, silêncio e intervalo no serviço) são
-calculados pelo backend com regras próprias.
+cold, sintético, 10 sementes) foi medido com o TS *disjoint* com c = 0,03,
+`fbm_obs` e sensores com os valores do simulador. A configuração servida (TS
+híbrido, c = 0,05, três colunas zeradas) não foi medida nesse contraste.
+
+O que apoia a escolha das colunas, com pesos diferentes:
+
+- **`fbm_obs`.** `run_fbm_ablation.py` no `spyno-decision`, com warm-start, c =
+  0,05, n = 20 sementes e Holm: zerar a coluna dá n.s. É a evidência boa, mas
+  n.s. não prova equivalência.
+- **Sensores.** `training/ablacao_sensores.py` é exploratória: cold start, 10
+  sementes, IC normal sem Holm e nenhum `results/*.json`. Além disso, hoje ela é
+  inócua: `build_policy("ts_hybrid")` já zera os sensores no adaptador, então a
+  condição "completo" também roda sem eles. Vale só como indício.
+- **As duas remoções juntas**, que é o que o serviço faz, nunca foram medidas.
+
+O warm-start é **sintético**: vem do simulador e das fórmulas de feature do
+simulador. O backend calcula as features com regras próprias, e há descompassos
+de **semântica** anteriores a esta mudança:
+
+- **`in_free_window`.** No simulador é a janela livre declarada pela persona. No
+  backend é uma aproximação, "acordado e fora do expediente"
+  (`decision_features.js`, `janelaLivre`). É a feature de maior peso no
+  warm-start: m = +2,25 no bloco base e +0,54 no bloco de envio.
+- **`valence_pos`.** No simulador é 0 ou 1. No backend vale 0,5 quando não há
+  feedback de rotina nas últimas 48 h, um valor fora do suporte dos dados do
+  warm-start.
+- **`recency`.** No simulador, log1p(h)/log1p(48) passa de 1 depois de 48 h
+  parado. No backend ela é saturada em 1.
+- **Elegibilidade.** O simulador tem teto de 5 envios/dia. O serviço tem cota 3,
+  silêncio e intervalo.
+- **`fatigue`.** O backend a reconstrói do histórico com regras próprias.
+
+Por isso o warm − cold na configuração servida e com features calculadas no
+estilo do backend **não foi medido**. Em produção, o warm-start pode render menos
+que no simulador, ou nada.
 
 ### Piso por braço e peso de importância (contrato 2.1)
 
@@ -267,8 +301,10 @@ decisões (tabela `policy_posteriors`, criada na subida).
   à do último dia fechado.
 - A persistência supõe um processo servindo cada `policy_version`, como hoje (o
   lock do end-day é local). Várias réplicas precisariam de lock no banco.
-- O warm-start é sintético e o contraste warm − cold não foi medido na
-  configuração servida (ver "Warm-start").
+- O warm-start é sintético, e o contraste warm − cold não foi medido na
+  configuração servida nem com as features do backend (ver "Warm-start").
+- `training/ablacao_sensores.py` não compara de fato com e sem sensores: o
+  adaptador zera os sensores nas três condições.
 - `fbm_threshold` depende de `fbm_full` e permanece restrito ao simulador.
 - O `spyno-decision` está marcado como não-pacote no seu `pyproject`, então
   entra por `sys.path`. Ajustável com `SPYNO_DECISION_PATH`.
