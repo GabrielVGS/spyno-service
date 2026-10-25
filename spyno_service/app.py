@@ -381,9 +381,13 @@ def create_app(policy=None, store=None, config=None) -> FastAPI:
                 return EndDayResponse(ok=False, date=req.date, error=type(exc).__name__)
             snap = snapshot_of(ctx["policy"]) if has_posterior(ctx["policy"]) else None
             # Fechamento e posterior na mesma transação (Store.close_day). Se ela
-            # falhar, o dia fica aberto e nada é gravado; a posterior em memória
-            # já avançou e o buffer foi consumido, então a nova tentativa do
-            # backend só fecha o dia e grava esta mesma posterior.
+            # falhar, o dia fica aberto e nada é gravado, mas a posterior em
+            # memória já avançou e o buffer foi consumido. `pending_updates` NÃO
+            # é zerado: ele conta os updates desde o último fechamento gravado.
+            # Na nova tentativa, os feedbacks chegados no intervalo (que estão no
+            # buffer) também entram no ajuste e no dia `date`: a posterior gravada
+            # é a de antes da falha MAIS esses updates, e `updates_applied` soma os
+            # dois lotes.
             try:
                 closed = store.close_day(req.date, ctx["policy_version"], n, snapshot=snap,
                                          digest=None if snap is None else digest(snap))
