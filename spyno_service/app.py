@@ -380,9 +380,19 @@ def create_app(policy=None, store=None, config=None) -> FastAPI:
                 log.exception("end_day falhou")
                 return EndDayResponse(ok=False, date=req.date, error=type(exc).__name__)
             snap = snapshot_of(ctx["policy"]) if has_posterior(ctx["policy"]) else None
-            # Fechamento e posterior na mesma transação (Store.close_day).
-            store.close_day(req.date, ctx["policy_version"], n, snapshot=snap,
-                            digest=None if snap is None else digest(snap))
+            # Fechamento e posterior na mesma transação (Store.close_day). Se ela
+            # falhar, o dia fica aberto e nada é gravado; a posterior em memória
+            # já avançou e o buffer foi consumido, então a nova tentativa do
+            # backend só fecha o dia e grava esta mesma posterior.
+            try:
+                closed = store.close_day(req.date, ctx["policy_version"], n, snapshot=snap,
+                                         digest=None if snap is None else digest(snap))
+            except Exception as exc:
+                log.exception("fechamento do dia %s não foi gravado", req.date)
+                return EndDayResponse(ok=False, date=req.date,
+                                      error=f"persistencia_{type(exc).__name__}")
+            if not closed:
+                return EndDayResponse(ok=True, date=req.date, already_closed=True)
             if snap is not None:
                 ctx["posterior"]["persisted_day"] = req.date.isoformat()
             ctx["pending_updates"] = 0

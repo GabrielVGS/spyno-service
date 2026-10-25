@@ -266,7 +266,11 @@ class Store:
                         conn.execute(policy_posteriors.insert().values(
                             policy_version=policy_version, **values))
         except IntegrityError:
-            return False
+            # Só a corrida no fechamento do mesmo dia é "já fechado"; qualquer
+            # outra violação (posterior inválida) sobe, com a transação desfeita.
+            if self.day_closed(day):
+                return False
+            raise
         return True
 
     def load_posterior(self, policy_version: str) -> dict | None:
