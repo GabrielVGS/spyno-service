@@ -17,6 +17,19 @@ class Config:
     #: e o backend não envia nada. Padrão ligado: nada chega ao usuário por acidente.
     shadow: bool = os.getenv("SPYNO_SHADOW", "1") not in ("0", "false", "False")
 
+    #: Em shadow a posterior fica CONGELADA por padrão: decisões e desfechos são
+    #: registrados, mas nenhum update entra no buffer e o /v1/end-day fecha o
+    #: dia sem tocar em m/q. O shadow vira só coleta de logs, e a posterior que
+    #: sai dele é exatamente a que entrou (o artefato de warm-start ou a última
+    #: persistida fora do shadow). SPYNO_SHADOW_LEARN=1 restaura o comportamento
+    #: anterior (treinar com (x, 0, y) e contadores *_proposed), não validado.
+    shadow_learn: bool = os.getenv("SPYNO_SHADOW_LEARN", "0") in ("1", "true", "True")
+
+    @property
+    def learning_frozen(self) -> bool:
+        """A posterior não aprende neste processo (shadow sem SPYNO_SHADOW_LEARN)."""
+        return self.shadow and not self.shadow_learn
+
     #: Orçamento de latência da decisão. Estourado, responde pela regra de contingência.
     decide_timeout_s: float = float(os.getenv("SPYNO_DECIDE_TIMEOUT", "0.2"))
 

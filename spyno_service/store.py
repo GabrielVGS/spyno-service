@@ -69,13 +69,17 @@ decisions = Table(
     # auditoria do treino
     Column("trained", Boolean),
     Column("train_skip_reason", String(48)),
+    # o serviço estava com a posterior congelada (shadow sem SPYNO_SHADOW_LEARN)
+    # quando decidiu: o desfecho deste ponto nunca treina, mas fica no log para
+    # a OPE; `update_eligible` continua dizendo se o ponto seria treinável
+    Column("learning_frozen", Boolean),
 )
 
 #: Colunas acrescentadas no esquema v2. Bancos criados antes recebem um
 #: ALTER TABLE explícito na abertura (ver Store._migrar).
 V2_COLUMNS = ("eligible", "update_eligible", "policy_context", "counter_basis",
               "recommended_propensity", "arm_probs", "trained", "train_skip_reason",
-              "proposed_action")
+              "proposed_action", "learning_frozen")
 
 #: Dias já fechados por /v1/end-day: é o que torna o fechamento idempotente.
 policy_days = Table(

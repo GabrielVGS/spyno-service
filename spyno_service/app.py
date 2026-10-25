@@ -29,7 +29,10 @@ from .store import Store, make_decision_id
 #: Versão do contrato HTTP. O backend confere em GET /v1/contract.
 #: 2.2: campos aditivos sobre a origem da posterior (posterior_init,
 #: warmstart_sha256 no contrato; posterior_source no /health).
-CONTRACT_VERSION = "2.2"
+#: 2.3: campos aditivos sobre o congelamento da posterior em shadow
+#: (learning_frozen no contrato, no /health, no /v1/policy-state, no decide e no
+#: end-day; shadow_learn no contrato).
+CONTRACT_VERSION = "2.3"
 
 _PROPOSED = ("notifs_today", "fatigue", "minutes_since_last")
 
@@ -112,8 +115,9 @@ def create_app(policy=None, store=None, config=None) -> FastAPI:
                       "warmstart": warm, "persisted_day": persisted_day,
                       "skipped_persisted": skipped},
     }
-    log.info("política ativa: %s (%s) | shadow=%s | posterior=%s%s",
-             cfg.policy, policy_version, cfg.shadow, source,
+    log.info("política ativa: %s (%s) | shadow=%s | aprendizado %s | posterior=%s%s",
+             cfg.policy, policy_version, cfg.shadow,
+             "CONGELADO" if cfg.learning_frozen else "ativo", source,
              f" (dia {persisted_day})" if persisted_day else "")
 
     def require_auth(request: Request) -> None:
@@ -145,6 +149,7 @@ def create_app(policy=None, store=None, config=None) -> FastAPI:
             decisions=ctx["store"].count(),
             pending_outcomes=ctx["store"].pending_outcomes(),
             posterior_source=ctx["posterior"]["source"],
+            learning_frozen=ctx["config"].learning_frozen,
         )
 
     @app.get("/v1/contract", response_model=ContractInfo)
@@ -170,6 +175,7 @@ def create_app(policy=None, store=None, config=None) -> FastAPI:
             quiet_start_h=c.quiet_start_h, quiet_end_h=c.quiet_end_h,
             posterior_init=ctx["posterior"]["init"],
             warmstart_sha256=(ctx["posterior"]["warmstart"] or {}).get("sha256"),
+            learning_frozen=c.learning_frozen, shadow_learn=c.shadow_learn,
         )
 
     @v1.get("/policies")
@@ -207,7 +213,9 @@ def create_app(policy=None, store=None, config=None) -> FastAPI:
                 "posterior_init": post["init"],
                 "persisted_day": post["persisted_day"],
                 "warmstart": post["warmstart"],
-                "skipped_persisted": post["skipped_persisted"]}
+                "skipped_persisted": post["skipped_persisted"],
+                # em shadow (sem SPYNO_SHADOW_LEARN) o digest não muda
+                "learning_frozen": ctx["config"].learning_frozen}
 
     @v1.post("/decide", response_model=DecideResponse)
     def decide(req: DecideRequest, request: Request) -> DecideResponse:
@@ -284,6 +292,10 @@ def create_app(policy=None, store=None, config=None) -> FastAPI:
             else:
                 propensity, method = propensities(pol, obs, executed, cfg.propensity_samples)
 
+        # `update_eligible` diz se o ponto SERIA treinável (elegível, sem guardrail
+        # bloqueando, sem contingência), com ou sem congelamento: é a seleção que
+        # a OPE precisa reproduzir. Se ele treina de fato depende também de
+        # `learning_frozen` (ver /v1/feedback).
         update_eligible = bool(req.eligible and not fallback and would_block is None)
 
         record = {
@@ -295,6 +307,7 @@ def create_app(policy=None, store=None, config=None) -> FastAPI:
             "counter_basis": basis,
             "eligible": req.eligible,
             "update_eligible": update_eligible,
+            "learning_frozen": cfg.learning_frozen,
             "recommended_action": recommended,
             "executed_action": executed,
             "proposed_action": proposed,
@@ -337,12 +350,20 @@ def create_app(policy=None, store=None, config=None) -> FastAPI:
             skip = "policy_version_diferente"
         elif not record.get("update_eligible"):
             skip = "ponto_nao_elegivel"
+        elif _decided_frozen(record):
+            # Decidido com a posterior congelada (shadow): o desfecho fica no log,
+            # para a OPE, mas nunca treina, nem depois de sair do shadow.
+            skip = "decisao_em_shadow_congelado"
+        elif ctx["config"].learning_frozen:
+            # Decisão treinável, mas o serviço agora está congelado: nada entra
+            # no buffer enquanto durar o shadow.
+            skip = "aprendizado_congelado"
         else:
             obs = json.loads(record.get("policy_context") or record["context"])
             try:
-                # Sempre a ação EXECUTADA. Em shadow ela é 0: (x, 0, y) é dado
-                # legítimo do braço 0. A ação proposta nunca treina, porque o
-                # desfecho não dependeu dela.
+                # Sempre a ação EXECUTADA. Em shadow com SPYNO_SHADOW_LEARN=1 ela
+                # é 0: (x, 0, y) é dado do braço 0. A ação proposta nunca treina,
+                # porque o desfecho não dependeu dela.
                 pol.update(record["user_key"], obs, record["executed_action"], y)
                 trained = True
                 ctx["pending_updates"] += 1
@@ -367,12 +388,28 @@ def create_app(policy=None, store=None, config=None) -> FastAPI:
         O backend chama uma vez por dia. Idempotente por data: uma segunda
         chamada com a mesma data não refaz o ajuste. O buffer de updates do dia
         é consumido pelo ajuste e esvaziado.
+
+        Com a posterior congelada (shadow), o dia é fechado em `policy_days`
+        com 0 updates, `policy.end_day()` não é chamado e nada é gravado em
+        `policy_posteriors`: a posterior persistida só nasce de aprendizado, e
+        uma linha gravada em shadow seria só uma cópia do estado inicial.
         """
         ctx = request.app.state.ctx
         store = ctx["store"]
+        frozen = ctx["config"].learning_frozen
         with ctx["end_day_lock"]:
             if store.day_closed(req.date):
-                return EndDayResponse(ok=True, date=req.date, already_closed=True)
+                return EndDayResponse(ok=True, date=req.date, already_closed=True,
+                                      learning_frozen=frozen)
+            if frozen:
+                try:
+                    closed = store.close_day(req.date, ctx["policy_version"], 0)
+                except Exception as exc:
+                    log.exception("fechamento do dia %s não foi gravado", req.date)
+                    return EndDayResponse(ok=False, date=req.date, learning_frozen=True,
+                                          error=f"persistencia_{type(exc).__name__}")
+                return EndDayResponse(ok=True, date=req.date, already_closed=not closed,
+                                      learning_frozen=True)
             n = ctx["pending_updates"]
             try:
                 ctx["policy"].end_day()
@@ -438,6 +475,7 @@ def _to_response(record: dict) -> DecideResponse:
         propensity_method=record["propensity_method"],
         counter_basis=record.get("counter_basis") or "executed",
         update_eligible=bool(record.get("update_eligible")),
+        learning_frozen=_decided_frozen(record),
         policy=record["policy"],
         policy_version=record["policy_version"],
         shadow=bool(record["shadow"]),
@@ -446,6 +484,16 @@ def _to_response(record: dict) -> DecideResponse:
         guardrail_reason=record["guardrail_reason"],
         latency_ms=record["latency_ms"],
     )
+
+
+def _decided_frozen(record: dict) -> bool:
+    """A decisão foi tomada com a posterior congelada.
+
+    Linhas anteriores à coluna (nula) contam como congeladas se eram de shadow:
+    é a regra vigente, e o padrão desde que ela existe.
+    """
+    frozen = record.get("learning_frozen")
+    return bool(record["shadow"]) if frozen is None else bool(frozen)
 
 
 def _proposed_action(record: dict) -> int:
