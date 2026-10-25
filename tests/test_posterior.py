@@ -243,10 +243,16 @@ def test_falha_ao_gravar_nao_fecha_o_dia(tmp_path):
         r1 = c.post("/v1/end-day", json={"date": "2026-10-22"}).json()
         assert r1["ok"] is False and r1["error"].startswith("persistencia_")
         assert not store.day_closed(__import__("datetime").date(2026, 10, 22))
+        falhou = c.get("/v1/policy-state").json()
+        assert falhou["pending_updates"] == 1, "não zera sem gravar"
+        # feedback chegado no intervalo: entra no ajuste e no dia D da nova tentativa
+        _train_one(c, point="2026-10-22T12:00:00-03:00")
         METADATA.create_all(store.engine)
         r2 = c.post("/v1/end-day", json={"date": "2026-10-22"}).json()
         s = c.get("/v1/policy-state").json()
-    assert r2["ok"] is True and r2["updates_applied"] == 1, "a nova tentativa conta o dia"
+    assert r2["ok"] is True and r2["updates_applied"] == 2, "os dois lotes contam no dia"
+    assert s["pending_updates"] == 0
+    assert s["posterior_digest"] != falhou["posterior_digest"], "o update do intervalo entrou"
     row = store.load_posterior(app.state.ctx["policy_version"])
     assert row["digest"] == s["posterior_digest"]
 
@@ -298,6 +304,33 @@ def test_persistida_de_outra_versao_nao_e_carregada(tmp_path):
             clip=ClipConfig(0.2, 0.8, 0.1), n_samples=50))) as c:
         s = c.get("/v1/policy-state").json()
     assert s["posterior_source"] == "warmstart"
+    assert s["policy_version"] != v_warm
+    assert v_warm in [v["policy_version"] for v in s["skipped_persisted"]]
+
+
+def test_reinicio_perde_os_updates_do_dia_aberto(tmp_path):
+    """Dívida documentada: o buffer do dia aberto vive em memória.
+
+    Um reinício antes do end-day volta à posterior do último dia fechado; o log
+    continua dizendo trained=true para esses desfechos.
+    """
+    db = tmp_path / "p.db"
+    app = _app(db, warm=WARM)
+    with _client(app) as c:
+        _train_one(c)
+        c.post("/v1/end-day", json={"date": "2026-10-22"})
+        fechado = c.get("/v1/policy-state").json()
+        aberto = _train_one(c, point="2026-10-23T10:00:00-03:00")
+        assert c.get("/v1/policy-state").json()["pending_updates"] == 1
+    with _client(_app(db, warm=WARM)) as c:
+        s = c.get("/v1/policy-state").json()
+        r = c.post("/v1/end-day", json={"date": "2026-10-23"}).json()
+        depois = c.get("/v1/policy-state").json()
+    assert s["posterior_source"] == "persisted" and s["persisted_day"] == "2026-10-22"
+    assert s["pending_updates"] == 0, "o update do dia 23 se perdeu"
+    assert s["posterior_digest"] == fechado["posterior_digest"]
+    assert r["updates_applied"] == 0 and depois["posterior_digest"] == fechado["posterior_digest"]
+    assert app.state.ctx["store"].get(aberto["decision_id"])["trained"] is True
 
 
 def test_persistida_corrompida_derruba_a_subida(tmp_path):
