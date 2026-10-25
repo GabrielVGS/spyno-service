@@ -73,13 +73,18 @@ decisions = Table(
     # quando decidiu: o desfecho deste ponto nunca treina, mas fica no log para
     # a OPE; `update_eligible` continua dizendo se o ponto seria treinável
     Column("learning_frozen", Boolean),
+    # desde o contrato 2.3: instante em que uma decisão gravada fora do shadow
+    # foi repetida com o serviço em shadow e a resposta forçou a abstenção. A
+    # decisão original fica como estava; a execução efetiva desta linha passa a
+    # ser 0 (propensão 1) e o desfecho dela nunca treina
+    Column("shadow_override_at", DateTime(timezone=True)),
 )
 
 #: Colunas acrescentadas no esquema v2. Bancos criados antes recebem um
 #: ALTER TABLE explícito na abertura (ver Store._migrar).
 V2_COLUMNS = ("eligible", "update_eligible", "policy_context", "counter_basis",
               "recommended_propensity", "arm_probs", "trained", "train_skip_reason",
-              "proposed_action", "learning_frozen")
+              "proposed_action", "learning_frozen", "shadow_override_at")
 
 #: Dias já fechados por /v1/end-day: é o que torna o fechamento idempotente.
 policy_days = Table(
@@ -240,6 +245,15 @@ class Store:
                 .values(outcome=outcome, outcome_value=value, outcome_at=observed_utc)
             )
         return True, None, outcome
+
+    def mark_shadow_override(self, decision_id: str, when: datetime | None = None) -> None:
+        """Registra (uma vez) que a resposta desta decisão foi forçada a 0 pelo shadow."""
+        with self.engine.begin() as conn:
+            conn.execute(
+                update(decisions).where(decisions.c.decision_id == decision_id)
+                .where(decisions.c.shadow_override_at.is_(None))
+                .values(shadow_override_at=_utc(when or datetime.now(timezone.utc)))
+            )
 
     def mark_trained(self, decision_id: str, trained: bool, reason: str | None) -> None:
         with self.engine.begin() as conn:

@@ -75,6 +75,9 @@ def create_app(policy=None, store=None, config=None) -> FastAPI:
     persistable = has_posterior(chosen)
     source = init if persistable else None
     persisted_day, skipped = None, []
+    # A posterior carregada descende de aprendizado em shadow (só possível com
+    # SPYNO_SHADOW_LEARN=1). A marca é hereditária: o end-day a regrava.
+    carried_shadow = False
     if persistable:
         row = store.load_posterior(policy_version)
         tainted = None if row is None else _shadow_taint(row, store, policy_version)
@@ -103,6 +106,7 @@ def create_app(policy=None, store=None, config=None) -> FastAPI:
                     f"posterior persistida de {policy_version} não confere com o digest "
                     f"gravado ({row['digest']})")
             source, persisted_day = "persisted", row["day"].isoformat()
+            carried_shadow = tainted is not None
         outras = [{**v, "reason": "outra_policy_version"} for v in store.persisted_versions()
                   if v["policy_version"] != policy_version]
         if outras:
@@ -128,7 +132,8 @@ def create_app(policy=None, store=None, config=None) -> FastAPI:
         "end_day_lock": threading.Lock(),
         "posterior": {"source": source, "init": init if persistable else None,
                       "warmstart": warm, "persisted_day": persisted_day,
-                      "skipped_persisted": skipped},
+                      "skipped_persisted": skipped,
+                      "learned_in_shadow": carried_shadow},
     }
     log.info("política ativa: %s (%s) | shadow=%s | aprendizado %s | posterior=%s%s",
              cfg.policy, policy_version, cfg.shadow,
@@ -229,6 +234,8 @@ def create_app(policy=None, store=None, config=None) -> FastAPI:
                 "persisted_day": post["persisted_day"],
                 "warmstart": post["warmstart"],
                 "skipped_persisted": post["skipped_persisted"],
+                # a posterior em memória descende de aprendizado em shadow
+                "learned_in_shadow": post["learned_in_shadow"],
                 # em shadow (sem SPYNO_SHADOW_LEARN) o digest não muda
                 "learning_frozen": ctx["config"].learning_frozen}
 
@@ -245,15 +252,16 @@ def create_app(policy=None, store=None, config=None) -> FastAPI:
         # viraria exploração extra e corromperia a propensão registrada.
         existing = store.get(decision_id)
         if existing is not None:
-            resp = _to_response(existing)
-            if cfg.shadow and resp.executed_action != 0:
+            if cfg.shadow and existing["executed_action"] != 0 \
+                    and existing.get("shadow_override_at") is None:
                 # Decisão gravada fora do shadow e repetida com o serviço já em
                 # shadow (reinício na mesma hora): nada pode ser enviado. A
-                # resposta força a abstenção; o registro original não é reescrito.
-                resp = resp.model_copy(update={
-                    "executed_action": 0, "propensity": 1.0, "shadow": True,
-                    "guardrail_reason": "shadow", "shadow_override": True})
-            return resp
+                # decisão original não é reescrita; marca-se que a execução
+                # efetiva passou a ser 0, e daqui em diante toda repetição
+                # (também fora do shadow) devolve a abstenção forçada.
+                store.mark_shadow_override(decision_id)
+                existing = store.get(decision_id)
+            return _to_response(existing)
 
         raw = req.context.model_dump()
         obs, basis = _effective_context(req.context, cfg.shadow)
@@ -367,6 +375,11 @@ def create_app(policy=None, store=None, config=None) -> FastAPI:
         trained, skip = False, None
         if y is None:
             skip = f"sem_treino_{outcome}"
+        elif record.get("shadow_override_at") is not None:
+            # A resposta efetiva foi abstenção forçada pelo shadow, mas o
+            # registro diz o braço de envio: (x, braço, y) seria falso. Nunca
+            # treina, qualquer que seja o modo agora.
+            skip = "override_shadow"
         elif record["policy_version"] != ctx["policy_version"]:
             # Decisão de outra versão: outra escala de features e outro
             # clipping. O desfecho fica no log, mas não treina a posterior atual.
@@ -440,6 +453,8 @@ def create_app(policy=None, store=None, config=None) -> FastAPI:
                 log.exception("end_day falhou")
                 return EndDayResponse(ok=False, date=req.date, error=type(exc).__name__)
             snap = snapshot_of(ctx["policy"]) if has_posterior(ctx["policy"]) else None
+            # Hereditária: aprendida em shadow agora, ou descendente de uma que foi.
+            learned_in_shadow = ctx["config"].shadow or ctx["posterior"]["learned_in_shadow"]
             # Fechamento e posterior na mesma transação (Store.close_day). Se ela
             # falhar, o dia fica aberto e nada é gravado, mas a posterior em
             # memória já avançou e o buffer foi consumido. `pending_updates` NÃO
@@ -451,7 +466,7 @@ def create_app(policy=None, store=None, config=None) -> FastAPI:
             try:
                 closed = store.close_day(req.date, ctx["policy_version"], n, snapshot=snap,
                                          digest=None if snap is None else digest(snap),
-                                         learned_in_shadow=ctx["config"].shadow)
+                                         learned_in_shadow=learned_in_shadow)
             except Exception as exc:
                 log.exception("fechamento do dia %s não foi gravado", req.date)
                 return EndDayResponse(ok=False, date=req.date,
@@ -460,6 +475,7 @@ def create_app(policy=None, store=None, config=None) -> FastAPI:
                 return EndDayResponse(ok=True, date=req.date, already_closed=True)
             if snap is not None:
                 ctx["posterior"]["persisted_day"] = req.date.isoformat()
+                ctx["posterior"]["learned_in_shadow"] = learned_in_shadow
             ctx["pending_updates"] = 0
         return EndDayResponse(ok=True, date=req.date, updates_applied=n)
 
@@ -487,6 +503,19 @@ def _effective_context(context: Context, shadow: bool) -> tuple[dict, str]:
 
 
 def _to_response(record: dict) -> DecideResponse:
+    resp = _base_response(record)
+    if record.get("shadow_override_at") is not None:
+        # Regime efetivo da linha: abstenção forçada (propensão 1), sem treino.
+        # `update_eligible` fica como foi decidido (a seleção treinável, como
+        # nas linhas de shadow), e o backend o grava em atualiza_politica.
+        resp = resp.model_copy(update={
+            "executed_action": 0, "propensity": 1.0, "shadow": True,
+            "guardrail_reason": "shadow", "shadow_override": True,
+            "learning_frozen": True})
+    return resp
+
+
+def _base_response(record: dict) -> DecideResponse:
     return DecideResponse(
         decision_id=record["decision_id"],
         recommended_action=record["recommended_action"],
