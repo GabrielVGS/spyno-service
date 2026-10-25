@@ -21,7 +21,7 @@ de correção: propensão registrada corretamente, decisão reproduzível a part
 log, atribuição de desfecho auditável e modo de observação que impeça qualquer
 envio acidental. Fila distribuída torna essas quatro mais difíceis de verificar.
 
-## Contrato (versão 2.2, esquema de política `v2`)
+## Contrato (versão 2.3, esquema de política `v2`)
 
 Todos os `/v1/*`, exceto `GET /v1/contract`, exigem
 `Authorization: Bearer <SPYNO_DECISION_TOKEN>` (comparação em tempo constante).
@@ -31,13 +31,13 @@ desenvolvimento. `GET /health` também é aberto.
 
 | | |
 |---|---|
-| `GET /v1/contract` | `policy_version`, `outcome_window_min`, features, braços, clipping (inclusive `arm_floor` e `max_importance_weight`, desde a 2.1), guardrails e, desde a 2.2, `posterior_init` (`warmstart` \| `prior`) e `warmstart_sha256`. O backend lê na subida e recusa iniciar se divergir da configuração dele |
-| `POST /v1/decide` | contexto do ponto de decisão → ação recomendada e executada, `decision_id`, versão, propensões, distribuição clipada |
+| `GET /v1/contract` | `policy_version`, `outcome_window_min`, features, braços, clipping (inclusive `arm_floor` e `max_importance_weight`, desde a 2.1), guardrails, desde a 2.2, `posterior_init` (`warmstart` \| `prior`) e `warmstart_sha256` e, desde a 2.3, `learning_frozen` e `shadow_learn`. O backend lê na subida e recusa iniciar se divergir da configuração dele |
+| `POST /v1/decide` | contexto do ponto de decisão → ação recomendada e executada, `decision_id`, versão, propensões, distribuição clipada, `update_eligible` e, desde a 2.3, `learning_frozen` |
 | `POST /v1/feedback` | `decision_id` + desfecho, aplicado uma única vez |
-| `POST /v1/end-day` | `{"date": "AAAA-MM-DD"}` (data local). O backend chama uma vez por dia; ajusta a posterior com o buffer do dia, o esvazia e grava a posterior no banco na mesma transação do fechamento. Idempotente por data |
+| `POST /v1/end-day` | `{"date": "AAAA-MM-DD"}` (data local). O backend chama uma vez por dia; ajusta a posterior com o buffer do dia, o esvazia e grava a posterior no banco na mesma transação do fechamento. Idempotente por data. Com a posterior congelada (shadow) só fecha o dia (`learning_frozen=true`, 0 updates) |
 | `POST /v1/close-windows` | fecha como censura as janelas vencidas, sem treino |
-| `GET /v1/policy-state` | hash da posterior, updates pendentes, dias fechados e a origem da posterior (`posterior_source`, `posterior_init`, `persisted_day`, `warmstart`, `skipped_persisted`): confirma de fora que o end-day mudou a posterior e que um reinício a recuperou (sem expor os pesos) |
-| `GET /health` | política ativa, versão, decisões, desfechos pendentes e, desde a 2.2, `posterior_source` |
+| `GET /v1/policy-state` | hash da posterior, updates pendentes, dias fechados e a origem da posterior (`posterior_source`, `posterior_init`, `persisted_day`, `warmstart`, `skipped_persisted`) e, desde a 2.3, `learning_frozen`: confirma de fora que o end-day mudou a posterior e que um reinício a recuperou (sem expor os pesos) |
+| `GET /health` | política ativa, versão, decisões, desfechos pendentes, desde a 2.2, `posterior_source` e, desde a 2.3, `learning_frozen` |
 | `GET /v1/policies`, `GET /v1/features` | políticas disponíveis; ordem do vetor |
 
 Garantias:
@@ -62,9 +62,43 @@ Garantias:
   `delivery_failed` e respostas fora da janela só fecham o pendente. Só treinam
   pontos com `update_eligible`: elegíveis pelo backend, sem guardrail que
   bloquearia um envio e sem contingência. Decisões de outra `policy_version`
-  ficam no log, mas não treinam.
-- **Shadow.** Nada é enviado (`executed_action=0`) e o update usa (x, 0, y),
-  nunca a ação proposta. Os contadores `*_proposed` do contexto
+  ficam no log, mas não treinam. Com a posterior congelada (shadow, abaixo)
+  nada treina.
+- **Shadow: a posterior não aprende (desde a 2.3).** Nada é enviado
+  (`executed_action=0`) e, com `SPYNO_SHADOW_LEARN=0` (padrão), o shadow é só
+  coleta de logs:
+  - `/v1/decide` registra tudo como antes (contexto bruto e efetivo,
+    `counter_basis`, propensões, `arm_probs`, `proposed_action`) e marca
+    `learning_frozen=true` na resposta e na coluna `decisions.learning_frozen`;
+  - `update_eligible` **continua** dizendo se o ponto seria treinável
+    (elegível, sem guardrail bloqueando, sem contingência): é a seleção que a
+    OPE precisa reproduzir sobre esses logs;
+  - `/v1/feedback` grava o desfecho, mas não chama `update`:
+    `trained=false`, `train_skip_reason="decisao_em_shadow_congelado"` (ou o
+    motivo anterior, como `sem_treino_censored`, quando ele já impediria o treino);
+  - `/v1/end-day` fecha o dia em `policy_days` com `updates_applied=0`, de forma
+    idempotente, **sem** chamar `policy.end_day()` e **sem** gravar posterior
+    em `policy_posteriors` (escolha: a posterior persistida só nasce de
+    aprendizado; uma linha gravada em shadow seria cópia do estado inicial);
+  - o digest em `/v1/policy-state` fica igual ao da subida durante todo o
+    shadow, e a `policy_version` não depende do shadow.
+
+  Por quê: o warm-start servido foi validado fora do shadow
+  (`spyno-decision`, `exp/warmstart-served`). Treinar em shadow a modificaria só
+  com dados do braço 0 e contadores hipotéticos (`*_proposed`), e esse estado
+  pós-shadow nunca foi testado. Ao sair do shadow (reinício com
+  `SPYNO_SHADOW=0`), a posterior carregada é exatamente a que entrou: o
+  artefato de warm-start, ou a última posterior persistida fora do shadow.
+  Desfechos de decisões tomadas em shadow que chegam depois do reinício também
+  não treinam (`decisao_em_shadow_congelado`). Desfechos de decisões treináveis
+  tomadas fora do shadow que chegam com o serviço já em shadow não treinam
+  (`aprendizado_congelado`). Linhas antigas sem a coluna `learning_frozen`
+  contam como congeladas se eram de shadow.
+
+  `SPYNO_SHADOW_LEARN=1` restaura o comportamento anterior à 2.3 (update com
+  (x, 0, y), features sobre os `*_proposed`), que não foi validado.
+
+  Os contadores `*_proposed` do contexto
   (`notifs_today_proposed`, `fatigue_proposed`, `minutes_since_last_proposed`)
   são os calculados pelo backend sobre a ação proposta, devolvida em
   `proposed_action`: a que teria sido executada sem o shadow, ou seja, a
@@ -286,6 +320,7 @@ log de `Notificacao`): `python3 demo/run_demo.py`, ver `demo/README.md`.
 | variável | padrão | efeito |
 |---|---|---|
 | `SPYNO_WARMSTART_SNAPSHOT` | vazio (prior); no compose, `/app/warmstart/ts_hybrid-v2-c0.05.json` | artefato de warm-start da posterior inicial; entra na `policy_version` |
+| `SPYNO_SHADOW_LEARN` | `0` | `1`: em shadow, a posterior aprende com (x, 0, y), como antes da 2.3 (não validado). Sem efeito fora do shadow; não entra na `policy_version` |
 
 A posterior persistida não tem variável: ela fica no mesmo `SPYNO_DB_URL` das
 decisões (tabela `policy_posteriors`, criada na subida).
@@ -299,6 +334,18 @@ decisões (tabela `policy_posteriors`, criada na subida).
 - Os updates de um dia ainda não fechado vivem em memória. Um reinício antes do
   end-day os perde, embora o log já os marque `trained=true`; a posterior volta
   à do último dia fechado.
+- Um dia fechado em shadow fica fechado: se o serviço sai do shadow no mesmo
+  dia local, o end-day dessa data responde `already_closed` e os updates do
+  resto do dia só entram no ajuste do dia seguinte. `policy_days` não marca
+  que o fechamento foi congelado (só `updates_applied=0`).
+- Uma decisão tomada em shadow e repetida na mesma hora depois de sair do
+  shadow devolve a decisão de shadow já gravada (`decision_id` não depende do
+  shadow): nada é enviado nessa hora.
+- Os logs de shadow, com ou sem congelamento, só sustentam OPE de alvos que
+  se abstêm: a ação executada é sempre 0, com propensão 1. `proposed_action` e
+  `arm_probs` servem para auditar o que a política teria feito, não para
+  estimar o valor de alvos que enviam. O que eles dão é o desfecho sob
+  abstenção, por contexto, e a seleção `update_eligible`.
 - A persistência supõe um processo servindo cada `policy_version`, como hoje (o
   lock do end-day é local). Várias réplicas precisariam de lock no banco.
 - O warm-start é sintético, e o contraste warm − cold não foi medido na
