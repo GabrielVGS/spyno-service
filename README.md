@@ -133,7 +133,8 @@ com a semente fixa s = 0:
 - `warm_start` original do `spyno-decision`: Laplace sobre os 4 941 pontos
   elegíveis do log, com o custo c = 0,05 da política servida.
 
-O ajuste é determinístico: duas execuções geram o mesmo arquivo, e um teste (pulado sem o `spyno-sim`)
+O ajuste é determinístico: duas execuções geram os mesmos m e q (só a proveniência
+muda com os commits), e um teste (pulado sem o `spyno-sim`)
 confere isso. O artefato registra a receita, os commits do `spyno-sim` e do
 `spyno-service`, o sha256 dos arquivos vendorizados do `spyno-decision` e um
 *crosscheck*: o mesmo ajuste refeito com o `spyno-decision` master (`74d1437`)
