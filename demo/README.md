@@ -12,7 +12,15 @@ python3 demo/run_demo.py                  # shadow mode (padrão)
 python3 demo/run_demo.py --sem-shadow     # envio real, entrega FCM simulada
 python3 demo/run_demo.py --manter         # deixa os contêineres de pé no fim
 BACKEND_DIR=/caminho/do/Spyno_Backend python3 demo/run_demo.py
+python3 demo/run_demo.py --warmstart --reiniciar   # warm-start + reinício do serviço
 ```
+
+`--warmstart` sobe o serviço com `SPYNO_WARMSTART_SNAPSHOT` apontando para o
+artefato versionado. Sem a opção, o serviço começa do prior, e a demo confere
+`posterior_init` no contrato nos dois casos. `--reiniciar` reinicia o contêiner
+`decision` depois do end-day e confere quatro coisas: `posterior_source =
+persisted`, o mesmo digest em `/v1/policy-state`, a mesma `policy_version` e o
+mesmo `posterior_init`. A saída vai para `demo/out/<modo>[-warmstart][-reinicio]/`.
 
 Uma execução leva uns 3 minutos (a maior parte é o build). Termina com
 `TUDO OK` ou com a lista de falhas e código de saída 1.

@@ -218,11 +218,17 @@ def main() -> int:
                     help="SPYNO_SHADOW=0: envios reais, entrega FCM simulada no banco")
     ap.add_argument("--manter", action="store_true", help="não derruba os contêineres no fim")
     ap.add_argument("--sem-build", action="store_true", help="reaproveita as imagens já construídas")
+    ap.add_argument("--warmstart", action="store_true",
+                    help="serviço sobe com SPYNO_WARMSTART_SNAPSHOT (warmstart/ts_hybrid-v2-c0.05.json)")
+    ap.add_argument("--reiniciar", action="store_true",
+                    help="depois do end-day, reinicia o contêiner decision e confere a posterior persistida")
     args = ap.parse_args()
 
     ENV = carregar_env()
     shadow = not args.sem_shadow
     ENV["DEMO_SHADOW"] = "1" if shadow else "0"
+    ENV["DEMO_WARMSTART_SNAPSHOT"] = (
+        "/app/warmstart/ts_hybrid-v2-c0.05.json" if args.warmstart else "")
     tick_ms = int(ENV["DEMO_TICK_MS"])
     backend = Path(ENV["BACKEND_DIR"])
     if not (backend / "Dockerfile").exists():
@@ -232,7 +238,9 @@ def main() -> int:
     bearer = {"Authorization": f"Bearer {ENV['DEMO_DECISION_TOKEN']}"}
     servico_hdr = {"X-Service-Token": ENV["DEMO_SERVICE_TOKEN"]}
     global OUT
-    OUT = OUT / ("shadow" if shadow else "sem-shadow")
+    OUT = OUT / (("shadow" if shadow else "sem-shadow")
+                 + ("-warmstart" if args.warmstart else "")
+                 + ("-reinicio" if args.reiniciar else ""))
     OUT.mkdir(parents=True, exist_ok=True)
     checks: list[dict] = []
 
@@ -262,6 +270,12 @@ def main() -> int:
         print("== Contrato do serviço")
         s, contrato = http("GET", f"{svc}/v1/contract")
         confere("GET /v1/contract sem Authorization -> 200", s == 200)
+        init_esperado = "warmstart" if args.warmstart else "prior"
+        confere(f"posterior inicial = {init_esperado}",
+                contrato.get("posterior_init") == init_esperado
+                and (contrato.get("warmstart_sha256") is not None) == args.warmstart,
+                f"posterior_init={contrato.get('posterior_init')}, "
+                f"contract_version={contrato.get('contract_version')}")
         corpo = {"user_key": "x", "decision_point": "2026-10-21T10:00:00-03:00", "eligible": True,
                  "context": {}}
         s1, _ = http("POST", f"{svc}/v1/decide", corpo)
@@ -355,6 +369,25 @@ def main() -> int:
         _, antes_rep = http("GET", f"{svc}/v1/policy-state", headers=bearer)
         s, rep = http("POST", f"{svc}/v1/end-day", {"date": DIA.isoformat()}, bearer)
         _, depois_rep = http("GET", f"{svc}/v1/policy-state", headers=bearer)
+
+        reinicio = None
+        if args.reiniciar:
+            print("== Reinício do serviço depois do end-day")
+            compose("restart", "-t", "5", "decision")
+            esperar(lambda: http("GET", f"{svc}/health")[0] == 200, "o serviço reiniciado")
+            _, apos = http("GET", f"{svc}/v1/policy-state", headers=bearer)
+            reinicio = {"antes": depois_rep, "depois": apos}
+            (OUT / "reinicio.json").write_text(json.dumps(reinicio, indent=1, default=str))
+            confere("reinício: posterior_source = persisted", apos.get("posterior_source") == "persisted",
+                    f"source={apos.get('posterior_source')}, dia={apos.get('persisted_day')}")
+            confere("reinício: mesmo digest da posterior",
+                    apos.get("posterior_digest") == depois_rep.get("posterior_digest"),
+                    f"{depois_rep.get('posterior_digest')} -> {apos.get('posterior_digest')}")
+            confere("reinício: mesma policy_version",
+                    apos.get("policy_version") == depois_rep.get("policy_version"),
+                    apos.get("policy_version", ""))
+            confere(f"reinício: posterior_init = {init_esperado}",
+                    apos.get("posterior_init") == init_esperado)
 
         exportar(notifs, decisoes, dias, treinos_feitos, historico_posterior, usuarios)
 

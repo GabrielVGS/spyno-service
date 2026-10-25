@@ -38,6 +38,8 @@ services:
       SPYNO_SHADOW: ${DEMO_SHADOW:-1}
       SPYNO_DECISION_TOKEN: ${DEMO_DECISION_TOKEN}
       SPYNO_OUTCOME_WINDOW_MIN: "180"
+      # Vazio: prior. run_demo.py --warmstart liga o artefato versionado.
+      SPYNO_WARMSTART_SNAPSHOT: ${DEMO_WARMSTART_SNAPSHOT:-}
       # Orçamento de latência padrão (0,2 s): uma contingência aparece no log
       # como propensity_method = "fallback".
     ports:
