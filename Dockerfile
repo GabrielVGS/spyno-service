@@ -8,6 +8,9 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 COPY pyproject.toml README.md ./
 COPY spyno_service ./spyno_service
 COPY spyno_decision ./spyno_decision
+# Artefatos de warm-start (training/build_warmstart.py); o uso é opt-in por
+# SPYNO_WARMSTART_SNAPSHOT.
+COPY warmstart ./warmstart
 
 # A política PPO puxa torch (~800 MB). Fora por padrão: a recomendada pela
 # avaliação é ts_hybrid. Construa com --build-arg COM_PPO=1 se precisar.
