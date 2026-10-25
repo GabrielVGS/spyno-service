@@ -104,7 +104,10 @@ Garantias:
   versão que treinaram
   (`reason="origem_desconhecida_com_shadow_treinando_no_historico"`). O serviço
   sobe do estado inicial, registra um WARNING e lista a linha em
-  `skipped_persisted` (`/v1/policy-state`). A linha não é apagada, mas o
+  `skipped_persisted` (`/v1/policy-state`). A marca é **hereditária**: se a
+  posterior carregada (com `SPYNO_SHADOW_LEARN=1`) era marcada, todo end-day
+  dela, mesmo fora do shadow, grava `learned_in_shadow=true`;
+  `/v1/policy-state` expõe `learned_in_shadow` da posterior em memória. A linha não é apagada, mas o
   próximo end-day fora do shadow a sobrescreve (uma linha por versão). Linha
   nula sem shadow treinando no log é carregada: se o log foi apagado, a origem
   não é detectável. Como há uma linha por versão, uma posterior aprendida fora
@@ -114,9 +117,23 @@ Garantias:
   **Decisão repetida em shadow.** Se uma decisão gravada fora do shadow é
   pedida de novo com o serviço em shadow (reinício na mesma hora, mesmo
   `decision_id`), a resposta força `executed_action=0`, `propensity=1`,
-  `shadow=true`, `guardrail_reason="shadow"` e marca `shadow_override=true`. O
-  registro original no log não é reescrito: ele continua dizendo o que foi
-  decidido e possivelmente enviado na primeira chamada.
+  `shadow=true`, `guardrail_reason="shadow"`, `learning_frozen=true` e marca
+  `shadow_override=true`. A decisão original no log não é reescrita, mas a
+  linha ganha `shadow_override_at` (instante da primeira repetição forçada). A
+  partir daí:
+  - toda repetição dessa decisão, também fora do shadow, devolve a mesma
+    abstenção forçada;
+  - o desfecho dela nunca treina (`train_skip_reason="override_shadow"`),
+    qualquer que seja o modo quando ele chega;
+  - `update_eligible` continua o decidido (a seleção treinável, como nas
+    linhas de shadow), e é isso que o backend grava em `atualiza_politica`.
+
+  **Leitura para a OPE:** linha com `shadow_override_at` não nulo tem ação
+  efetiva 0 com propensão 1 (abstenção forçada), não a `executed_action`
+  gravada. Exceção: se o backend executou a primeira resposta (fora do shadow)
+  antes da repetição, o envio aconteceu; confira na `Notificacao` (`entregue_em`)
+  antes de usar a linha. Um desfecho aplicado antes da repetição pode ter
+  treinado (`trained=true` com `outcome_at` < `shadow_override_at`).
 
   **Transição.** O backend lê `shadow` do `/v1/contract` só na subida. Para
   entrar ou sair do shadow, reinicie o serviço **e** o backend.
