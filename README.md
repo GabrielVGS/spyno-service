@@ -32,7 +32,7 @@ desenvolvimento. `GET /health` também é aberto.
 | | |
 |---|---|
 | `GET /v1/contract` | `policy_version`, `outcome_window_min`, features, braços, clipping (inclusive `arm_floor` e `max_importance_weight`, desde a 2.1), guardrails, desde a 2.2, `posterior_init` (`warmstart` \| `prior`) e `warmstart_sha256` e, desde a 2.3, `learning_frozen` e `shadow_learn`. O backend lê na subida e recusa iniciar se divergir da configuração dele |
-| `POST /v1/decide` | contexto do ponto de decisão → ação recomendada e executada, `decision_id`, versão, propensões, distribuição clipada, `update_eligible` e, desde a 2.3, `learning_frozen` |
+| `POST /v1/decide` | contexto do ponto de decisão → ação recomendada e executada, `decision_id`, versão, propensões, distribuição clipada, `update_eligible` e, desde a 2.3, `learning_frozen` e `shadow_override` |
 | `POST /v1/feedback` | `decision_id` + desfecho, aplicado uma única vez |
 | `POST /v1/end-day` | `{"date": "AAAA-MM-DD"}` (data local). O backend chama uma vez por dia; ajusta a posterior com o buffer do dia, o esvazia e grava a posterior no banco na mesma transação do fechamento. Idempotente por data. Com a posterior congelada (shadow) só fecha o dia (`learning_frozen=true`, 0 updates) |
 | `POST /v1/close-windows` | fecha como censura as janelas vencidas, sem treino |
@@ -94,6 +94,32 @@ Garantias:
   tomadas fora do shadow que chegam com o serviço já em shadow não treinam
   (`aprendizado_congelado`). Linhas antigas sem a coluna `learning_frozen`
   contam como congeladas se eram de shadow.
+
+  **Posterior aprendida em shadow não volta.** Cada linha de
+  `policy_posteriors` registra `learned_in_shadow` (gravada pelo end-day: true
+  só em shadow com `SPYNO_SHADOW_LEARN=1`). Na subida, sem
+  `SPYNO_SHADOW_LEARN=1`, uma posterior da mesma `policy_version` **não** é
+  carregada se `learned_in_shadow=true` (`reason="aprendida_em_shadow"`) ou se a
+  coluna é nula (linha anterior à 2.3) e o log tem decisões de shadow dessa
+  versão que treinaram
+  (`reason="origem_desconhecida_com_shadow_treinando_no_historico"`). O serviço
+  sobe do estado inicial, registra um WARNING e lista a linha em
+  `skipped_persisted` (`/v1/policy-state`). A linha não é apagada, mas o
+  próximo end-day fora do shadow a sobrescreve (uma linha por versão). Linha
+  nula sem shadow treinando no log é carregada: se o log foi apagado, a origem
+  não é detectável. Como há uma linha por versão, uma posterior aprendida fora
+  do shadow e depois continuada em shadow com `SPYNO_SHADOW_LEARN=1` não
+  é recuperável sem o aprendizado em shadow: a subida volta ao estado inicial.
+
+  **Decisão repetida em shadow.** Se uma decisão gravada fora do shadow é
+  pedida de novo com o serviço em shadow (reinício na mesma hora, mesmo
+  `decision_id`), a resposta força `executed_action=0`, `propensity=1`,
+  `shadow=true`, `guardrail_reason="shadow"` e marca `shadow_override=true`. O
+  registro original no log não é reescrito: ele continua dizendo o que foi
+  decidido e possivelmente enviado na primeira chamada.
+
+  **Transição.** O backend lê `shadow` do `/v1/contract` só na subida. Para
+  entrar ou sair do shadow, reinicie o serviço **e** o backend.
 
   `SPYNO_SHADOW_LEARN=1` restaura o comportamento anterior à 2.3 (update com
   (x, 0, y), sendo x calculado com os `*_proposed`), que não foi validado.
@@ -340,7 +366,15 @@ decisões (tabela `policy_posteriors`, criada na subida).
   que o fechamento foi congelado (só `updates_applied=0`).
 - Uma decisão tomada em shadow e repetida na mesma hora depois de sair do
   shadow devolve a decisão de shadow já gravada (`decision_id` não depende do
-  shadow): nada é enviado nessa hora.
+  shadow): nada é enviado nessa hora. No sentido inverso (fora do shadow →
+  shadow), a resposta é forçada a 0 com `shadow_override` (ver Shadow), e o
+  log do serviço e a `Notificacao` do backend divergem nessa linha.
+- Linhas de `decisions` anteriores à 2.3 (`learning_frozen` nulo) com
+  `shadow=true` são tratadas como congeladas no treino, o que é conservador.
+  Para a OPE elas devem ser lidas como **desconhecido**: antes da 2.3 o shadow
+  treinava, e `trained` diz o que de fato aconteceu.
+- O backend não grava `learning_frozen` nem `shadow_override` na `Notificacao`.
+  A fonte certa para a OPE é a tabela `decisions` do serviço.
 - Os logs de shadow, com ou sem congelamento, só sustentam OPE de alvos que
   se abstêm: a ação executada é sempre 0, com propensão 1. `proposed_action` e
   `arm_probs` servem para auditar o que a política teria feito, não para
