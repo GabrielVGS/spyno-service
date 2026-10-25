@@ -465,9 +465,11 @@ def test_braco_zero_tambem_treina(tmp_path):
 
 # ---- shadow: contadores propostos e update só com a ação executada ----------
 
-def test_shadow_atualiza_so_com_a_acao_executada(tmp_path):
+def test_shadow_learn_atualiza_so_com_a_acao_executada(tmp_path):
+    """SPYNO_SHADOW_LEARN=1 (fora do padrão): o comportamento anterior à 2.3."""
     rec = Recorder(wins=(0, 0, 0, 10))
-    with _client(tmp_path, ClippedPolicy(rec, CLIP, n_samples=1, seed=1), shadow=True) as c:
+    with _client(tmp_path, ClippedPolicy(rec, CLIP, n_samples=1, seed=1), shadow=True,
+                 shadow_learn=True) as c:
         propostas = []
         for h in range(8, 20):
             body = _decide(c, user="s", point=f"2026-10-22T{h:02d}:00:00-03:00", hour=h,
@@ -627,7 +629,7 @@ def test_contrato_expoe_janela_e_versao(tmp_path):
         assert info["policy_version"] == c.app.state.ctx["policy_version"]
         assert info["features"] == list(FEATURES)
         assert info["clip_min"] == pytest.approx(0.1)
-        assert info["contract_version"] == "2.2"
+        assert info["contract_version"] == "2.3"
         assert info["arm_floor"] == pytest.approx(1 / 30)
         assert info["max_importance_weight"] == pytest.approx(30.0)
 

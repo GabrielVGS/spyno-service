@@ -150,7 +150,7 @@ def test_warm_start_muda_posterior_e_policy_version(tmp_path):
     assert warm["posterior_digest"] != prior["posterior_digest"]
     assert warm["policy_version"] != prior["policy_version"], "warm-start é outra linhagem"
     assert warm["policy_version"].startswith("ts_hybrid-v2-")
-    assert contrato["contract_version"] == "2.2"
+    assert contrato["contract_version"] == "2.3"
     assert contrato["posterior_init"] == "warmstart" and contrato_prior["posterior_init"] == "prior"
     assert contrato["warmstart_sha256"] and contrato_prior["warmstart_sha256"] is None
     assert health["posterior_source"] == "warmstart"
@@ -367,15 +367,16 @@ def test_persistida_de_esquema_antigo_derruba_a_subida(tmp_path):
 def test_padroes_shadow_ligado_e_sem_warm_start():
     """Config lê o ambiente na importação: confere num processo limpo."""
     env = {k: v for k, v in os.environ.items()
-           if k not in ("SPYNO_SHADOW", "SPYNO_WARMSTART_SNAPSHOT", "SPYNO_POLICY")}
+           if k not in ("SPYNO_SHADOW", "SPYNO_WARMSTART_SNAPSHOT", "SPYNO_POLICY",
+                        "SPYNO_SHADOW_LEARN")}
     out = subprocess.run(
         [sys.executable, "-c",
          "from spyno_service.config import Config; c = Config(); "
          "print(c.shadow, c.warmstart_snapshot, c.policy, c.clip_min, c.clip_max, "
-         "round(c.arm_floor, 6))"],
+         "round(c.arm_floor, 6), c.shadow_learn, c.learning_frozen)"],
         cwd=ROOT, env={**env, "PYTHONPATH": str(ROOT)}, capture_output=True, text=True,
         check=True).stdout.split()
-    assert out == ["True", "None", "ts_hybrid", "0.1", "0.9", "0.033333"]
+    assert out == ["True", "None", "ts_hybrid", "0.1", "0.9", "0.033333", "False", "True"]
 
 
 def test_warm_start_mantem_shadow(tmp_path):
