@@ -368,7 +368,7 @@ decisões (tabela `policy_posteriors`, criada na subida).
   shadow devolve a decisão de shadow já gravada (`decision_id` não depende do
   shadow): nada é enviado nessa hora. No sentido inverso (fora do shadow →
   shadow), a resposta é forçada a 0 com `shadow_override` (ver Shadow), e o
-  log do serviço e a `Notificacao` do backend divergem nessa linha.
+  log do serviço e o que o backend gravar dessa resposta podem divergir.
 - Linhas de `decisions` anteriores à 2.3 (`learning_frozen` nulo) com
   `shadow=true` são tratadas como congeladas no treino, o que é conservador.
   Para a OPE elas devem ser lidas como **desconhecido**: antes da 2.3 o shadow
