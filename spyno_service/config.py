@@ -54,5 +54,11 @@ class Config:
 
     checkpoint_dir: str = os.getenv("SPYNO_CHECKPOINT_DIR", "./checkpoints")
 
+    #: Artefato de warm-start da posterior (gerado por training/build_warmstart.py).
+    #: Vazio: a linhagem começa do prior. Definido e incompatível com a política
+    #: ativa (outro esquema, features, política ou custo): o serviço não sobe.
+    #: Uma posterior persistida da mesma policy_version tem precedência sobre ele.
+    warmstart_snapshot: str | None = os.getenv("SPYNO_WARMSTART_SNAPSHOT") or None
+
 
 CONFIG = Config()

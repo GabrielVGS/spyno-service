@@ -627,7 +627,7 @@ def test_contrato_expoe_janela_e_versao(tmp_path):
         assert info["policy_version"] == c.app.state.ctx["policy_version"]
         assert info["features"] == list(FEATURES)
         assert info["clip_min"] == pytest.approx(0.1)
-        assert info["contract_version"] == "2.1"
+        assert info["contract_version"] == "2.2"
         assert info["arm_floor"] == pytest.approx(1 / 30)
         assert info["max_importance_weight"] == pytest.approx(30.0)
 

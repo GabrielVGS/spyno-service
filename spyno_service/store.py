@@ -86,6 +86,21 @@ policy_days = Table(
     Column("closed_at", DateTime(timezone=True), nullable=False),
 )
 
+#: Última posterior de cada `policy_version`, gravada na mesma transação que o
+#: fechamento do dia (ver Store.close_day). Uma linha por versão: a subida só
+#: carrega a da versão servida (ver posterior.py).
+policy_posteriors = Table(
+    "policy_posteriors", METADATA,
+    Column("policy_version", String(128), primary_key=True),
+    # JSON do snapshot (m, q, custo, esquema, features)
+    Column("snapshot", Text, nullable=False),
+    Column("digest", String(16), nullable=False),
+    Column("schema", String(16), nullable=False),
+    # dia cujo fechamento produziu esta posterior
+    Column("day", Date, nullable=False),
+    Column("saved_at", DateTime(timezone=True), nullable=False),
+)
+
 
 def _utc(dt: datetime) -> datetime:
     """Normaliza para UTC ciente de fuso.
@@ -223,19 +238,60 @@ class Store:
                 select(policy_days.c.day).where(policy_days.c.day == day)
             ).first() is not None
 
-    def close_day(self, day, policy_version: str, updates_applied: int) -> bool:
-        """Registra o fechamento. Devolve False se o dia já estava fechado."""
+    def close_day(self, day, policy_version: str, updates_applied: int,
+                  snapshot: dict | None = None, digest: str | None = None) -> bool:
+        """Registra o fechamento e, se houver, a posterior resultante.
+
+        As duas escritas vão na mesma transação: ou o dia fica fechado com a
+        posterior dele gravada, ou nada muda. Devolve False se o dia já estava
+        fechado (nesse caso a posterior também não é regravada).
+        """
         from sqlalchemy.exc import IntegrityError
 
+        now = datetime.now(timezone.utc)
         try:
             with self.engine.begin() as conn:
                 conn.execute(policy_days.insert().values(
                     day=day, policy_version=policy_version,
-                    updates_applied=updates_applied,
-                    closed_at=datetime.now(timezone.utc)))
+                    updates_applied=updates_applied, closed_at=now))
+                if snapshot is not None:
+                    values = {"snapshot": json.dumps(snapshot, default=float),
+                              "digest": digest, "schema": snapshot.get("schema", "v1"),
+                              "day": day, "saved_at": now}
+                    done = conn.execute(
+                        update(policy_posteriors)
+                        .where(policy_posteriors.c.policy_version == policy_version)
+                        .values(**values)).rowcount
+                    if not done:
+                        conn.execute(policy_posteriors.insert().values(
+                            policy_version=policy_version, **values))
         except IntegrityError:
             return False
         return True
+
+    def load_posterior(self, policy_version: str) -> dict | None:
+        """Posterior persistida desta versão: {snapshot, digest, schema, day, saved_at}."""
+        with self.engine.begin() as conn:
+            row = conn.execute(
+                select(policy_posteriors)
+                .where(policy_posteriors.c.policy_version == policy_version)
+            ).mappings().first()
+        if row is None:
+            return None
+        out = dict(row)
+        out["snapshot"] = json.loads(out["snapshot"])
+        return out
+
+    def persisted_versions(self) -> list[dict]:
+        """Versões com posterior persistida (sem os pesos), da mais recente à mais antiga."""
+        with self.engine.begin() as conn:
+            rows = conn.execute(
+                select(policy_posteriors.c.policy_version, policy_posteriors.c.day,
+                       policy_posteriors.c.digest)
+                .order_by(policy_posteriors.c.saved_at.desc())
+            ).mappings().all()
+        return [{"policy_version": r["policy_version"], "day": r["day"].isoformat(),
+                 "digest": r["digest"]} for r in rows]
 
     def closed_days(self) -> list[dict]:
         """Dias fechados por /v1/end-day, em ordem."""

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import hmac
 import json
 import logging
@@ -22,11 +21,15 @@ from .features import FEATURES, POLICY_SCHEMA
 from .guardrails import apply as apply_guardrails
 from .policies import propensities
 from .policies.clipping import ClippedPolicy
+from .policies.bandit import IncompatibleSnapshotError
 from .policies.registry import available, build, version
+from .posterior import apply_warmstart, digest, has_posterior, snapshot_of
 from .store import Store, make_decision_id
 
 #: Versão do contrato HTTP. O backend confere em GET /v1/contract.
-CONTRACT_VERSION = "2.1"
+#: 2.2: campos aditivos sobre a origem da posterior (posterior_init,
+#: warmstart_sha256 no contrato; posterior_source no /health).
+CONTRACT_VERSION = "2.2"
 
 _PROPOSED = ("notifs_today", "fatigue", "minutes_since_last")
 
@@ -42,6 +45,17 @@ def create_app(policy=None, store=None, config=None) -> FastAPI:
     """
     cfg = config or CONFIG
     chosen = policy if policy is not None else build(cfg.policy)
+    store = store if store is not None else Store(cfg.database_url)
+
+    # 1) Estado inicial da linhagem: warm-start, se configurado; senão o prior.
+    #    Artefato incompatível derruba a subida: quem pediu o warm-start não
+    #    pode receber um prior sem saber.
+    init, warm = "prior", None
+    if cfg.warmstart_snapshot:
+        warm = apply_warmstart(chosen, cfg.policy, cfg.warmstart_snapshot)
+        init = "warmstart"
+        log.info("warm-start carregado de %s (sha256 %s, posterior %s)",
+                 warm["path"], warm["sha256"][:12], warm["posterior_digest"])
 
     aquecer = getattr(chosen, "warmup", None)
     if callable(aquecer):
@@ -49,6 +63,35 @@ def create_app(policy=None, store=None, config=None) -> FastAPI:
             aquecer()
         except Exception:
             log.exception("aquecimento da política falhou; ela cairá na contingência")
+
+    # 2) A identidade é a do estado inicial (ver posterior.py): o warm-start
+    #    entra no hash, a posterior persistida não.
+    policy_version = version(chosen)
+
+    # 3) Posterior persistida da MESMA versão tem precedência.
+    persistable = has_posterior(chosen)
+    source = init if persistable else None
+    persisted_day, skipped = None, []
+    if persistable:
+        row = store.load_posterior(policy_version)
+        if row is not None:
+            try:
+                chosen.load_snapshot(row["snapshot"])
+            except IncompatibleSnapshotError as exc:
+                raise RuntimeError(
+                    f"posterior persistida de {policy_version} (dia {row['day']}) não "
+                    f"carrega: {exc}") from exc
+            if digest(snapshot_of(chosen)) != row["digest"]:
+                raise RuntimeError(
+                    f"posterior persistida de {policy_version} não confere com o digest "
+                    f"gravado ({row['digest']})")
+            source, persisted_day = "persisted", row["day"].isoformat()
+        skipped = [v for v in store.persisted_versions()
+                   if v["policy_version"] != policy_version]
+        if skipped:
+            log.warning("posteriors persistidas de outras versões NÃO carregadas "
+                        "(servindo %s): %s", policy_version,
+                        ", ".join(f"{v['policy_version']}@{v['day']}" for v in skipped))
 
     app = FastAPI(
         title="Spyno — serviço de decisão",
@@ -58,16 +101,20 @@ def create_app(policy=None, store=None, config=None) -> FastAPI:
     app.state.ctx = {
         "config": cfg,
         "policy": chosen,
-        "policy_version": version(chosen),
-        "store": store if store is not None else Store(cfg.database_url),
+        "policy_version": policy_version,
+        "store": store,
         "rng": np.random.default_rng(7),
         "pool": ThreadPoolExecutor(max_workers=4),
         "seen_users": set(),
         "pending_updates": 0,
         "end_day_lock": threading.Lock(),
+        "posterior": {"source": source, "init": init if persistable else None,
+                      "warmstart": warm, "persisted_day": persisted_day,
+                      "skipped_persisted": skipped},
     }
-    log.info("política ativa: %s (%s) | shadow=%s",
-             cfg.policy, app.state.ctx["policy_version"], cfg.shadow)
+    log.info("política ativa: %s (%s) | shadow=%s | posterior=%s%s",
+             cfg.policy, policy_version, cfg.shadow, source,
+             f" (dia {persisted_day})" if persisted_day else "")
 
     def require_auth(request: Request) -> None:
         """Bearer token em tempo constante; sem token configurado, 503 (fail closed)."""
@@ -97,6 +144,7 @@ def create_app(policy=None, store=None, config=None) -> FastAPI:
             shadow=ctx["config"].shadow,
             decisions=ctx["store"].count(),
             pending_outcomes=ctx["store"].pending_outcomes(),
+            posterior_source=ctx["posterior"]["source"],
         )
 
     @app.get("/v1/contract", response_model=ContractInfo)
@@ -120,6 +168,8 @@ def create_app(policy=None, store=None, config=None) -> FastAPI:
             arm_floor=c.arm_floor, max_importance_weight=w_max,
             daily_cap=c.daily_cap, cooldown_min=c.cooldown_min,
             quiet_start_h=c.quiet_start_h, quiet_end_h=c.quiet_end_h,
+            posterior_init=ctx["posterior"]["init"],
+            warmstart_sha256=(ctx["posterior"]["warmstart"] or {}).get("sha256"),
         )
 
     @v1.get("/policies")
@@ -142,17 +192,22 @@ def create_app(policy=None, store=None, config=None) -> FastAPI:
         um end-day repetido não a muda.
         """
         ctx = request.app.state.ctx
-        snap = getattr(ctx["policy"], "snapshot", None)
-        digest = None
-        if callable(snap):
-            try:
-                raw = json.dumps(snap(), sort_keys=True, default=float)
-                digest = hashlib.sha256(raw.encode()).hexdigest()[:16]
-            except Exception:
-                log.exception("snapshot da política falhou")
-        return {"policy_version": ctx["policy_version"], "posterior_digest": digest,
+        posterior_digest = None
+        try:
+            snap = snapshot_of(ctx["policy"])
+            posterior_digest = None if snap is None else digest(snap)
+        except Exception:
+            log.exception("snapshot da política falhou")
+        post = ctx["posterior"]
+        return {"policy_version": ctx["policy_version"], "posterior_digest": posterior_digest,
                 "pending_updates": ctx["pending_updates"],
-                "days_closed": ctx["store"].closed_days()}
+                "days_closed": ctx["store"].closed_days(),
+                # origem na subida: persisted | warmstart | prior (None sem posterior)
+                "posterior_source": post["source"],
+                "posterior_init": post["init"],
+                "persisted_day": post["persisted_day"],
+                "warmstart": post["warmstart"],
+                "skipped_persisted": post["skipped_persisted"]}
 
     @v1.post("/decide", response_model=DecideResponse)
     def decide(req: DecideRequest, request: Request) -> DecideResponse:
@@ -324,7 +379,12 @@ def create_app(policy=None, store=None, config=None) -> FastAPI:
             except Exception as exc:
                 log.exception("end_day falhou")
                 return EndDayResponse(ok=False, date=req.date, error=type(exc).__name__)
-            store.close_day(req.date, ctx["policy_version"], n)
+            snap = snapshot_of(ctx["policy"]) if has_posterior(ctx["policy"]) else None
+            # Fechamento e posterior na mesma transação (Store.close_day).
+            store.close_day(req.date, ctx["policy_version"], n, snapshot=snap,
+                            digest=None if snap is None else digest(snap))
+            if snap is not None:
+                ctx["posterior"]["persisted_day"] = req.date.isoformat()
             ctx["pending_updates"] = 0
         return EndDayResponse(ok=True, date=req.date, updates_applied=n)
 

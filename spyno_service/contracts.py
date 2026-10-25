@@ -170,6 +170,12 @@ class ContractInfo(BaseModel):
     cooldown_min: int
     quiet_start_h: int
     quiet_end_h: int
+    #: Estado inicial da linhagem (desde o contrato 2.2): "warmstart" ou
+    #: "prior". Faz parte da policy_version. Campos aditivos: o backend não
+    #: precisa lê-los.
+    posterior_init: str | None = None
+    #: sha256 do artefato de warm-start carregado, ou None.
+    warmstart_sha256: str | None = None
 
 
 class Health(BaseModel):
@@ -179,3 +185,6 @@ class Health(BaseModel):
     shadow: bool
     decisions: int
     pending_outcomes: int
+    #: De onde veio a posterior em uso na subida: "persisted", "warmstart" ou
+    #: "prior" (desde o contrato 2.2). None para políticas sem posterior.
+    posterior_source: str | None = None
