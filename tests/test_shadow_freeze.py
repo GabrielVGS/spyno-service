@@ -403,3 +403,77 @@ def test_decisao_live_repetida_em_shadow_nao_envia(tmp_path):
     assert r["proposed_action"] == envio["executed_action"]
     assert row["executed_action"] == envio["executed_action"] and row["shadow"] is False, \
         "o registro original não é reescrito"
+    assert row["shadow_override_at"] is not None, "o log marca a abstenção forçada"
+    assert r["learning_frozen"] is True and r["update_eligible"] is envio["update_eligible"]
+
+
+def _override(tmp_path, nome):
+    """Decide fora do shadow com envio e repete em shadow: devolve (db, corpo, id)."""
+    from tests.test_policy_v2 import Recorder
+
+    db = tmp_path / nome
+    pol = lambda: ClippedPolicy(Recorder(wins=(0, 0, 0, 10)), CLIP, n_samples=1, seed=2)  # noqa: E731
+    with _client(_app(db, shadow=False, warm=None, policy=pol())) as c:
+        for h in range(8, 20):
+            corpo = {"user_key": "u", "decision_point": f"2026-10-22T{h:02d}:00:00-03:00",
+                     "context": _context(h), "eligible": True}
+            r = c.post("/v1/decide", json=corpo).json()
+            if r["executed_action"] > 0:
+                break
+    assert r["executed_action"] > 0
+    with _client(_app(db, shadow=True, warm=None, policy=pol())) as c:
+        assert c.post("/v1/decide", json=corpo).json()["shadow_override"] is True
+    return db, corpo, r["decision_id"], pol
+
+
+def _fb(c, corpo, decision_id):
+    return c.post("/v1/feedback", json={
+        "decision_id": decision_id, "outcome": "responded", "value": 1,
+        "observed_at": corpo["decision_point"].replace(":00:00", ":30:00")}).json()
+
+
+def test_override_nao_treina_ao_voltar_ao_live(tmp_path):
+    db, corpo, did, pol = _override(tmp_path, "ov1.db")
+    p = pol()
+    app = _app(db, shadow=False, warm=None, policy=p)
+    with _client(app) as c:
+        again = c.post("/v1/decide", json=corpo).json()
+        fb = _fb(c, corpo, did)
+        pend = _state(c)["pending_updates"]
+    assert again["executed_action"] == 0 and again["shadow_override"] is True, \
+        "depois do override, toda repetição devolve a abstenção forçada"
+    assert fb["applied"] is True and fb["trained"] is False
+    assert fb["train_skip_reason"] == "override_shadow"
+    assert pend == 0 and p._inner.updates == []
+
+
+def test_override_nao_treina_com_shadow_learn(tmp_path):
+    db, corpo, did, pol = _override(tmp_path, "ov2.db")
+    p = pol()
+    with _client(_app(db, shadow=True, shadow_learn=True, warm=None, policy=p)) as c:
+        fb = _fb(c, corpo, did)
+    assert fb["trained"] is False and fb["train_skip_reason"] == "override_shadow"
+    assert p._inner.updates == []
+
+
+def test_marca_learned_in_shadow_e_hereditaria(tmp_path):
+    """Live com LEARN=1 carrega uma posterior aprendida em shadow; o end-day dela
+    continua marcado, e o live padrão continua recusando-a."""
+    db = tmp_path / "her.db"
+    with _client(_app(db, shadow=True, shadow_learn=True)) as c:
+        _dia(c, DIA0)
+        c.post("/v1/end-day", json={"date": DIA0.isoformat()})
+    app = _app(db, shadow=False, shadow_learn=True)
+    with _client(app) as c:
+        s = _state(c)
+        assert s["posterior_source"] == "persisted" and s["learned_in_shadow"] is True
+        d1 = DIA0 + timedelta(days=1)
+        _dia(c, d1)
+        assert c.post("/v1/end-day", json={"date": d1.isoformat()}).json()["updates_applied"] > 0
+        lavada = _state(c)["posterior_digest"]
+    assert [r["learned_in_shadow"] for r in _posterior_rows(app)] == [True]
+    with _client(_app(db, shadow=False)) as c:
+        s = _state(c)
+    assert s["posterior_source"] == "warmstart" and s["learned_in_shadow"] is False
+    assert s["skipped_persisted"][0]["digest"] == lavada
+    assert s["skipped_persisted"][0]["reason"] == "aprendida_em_shadow"
