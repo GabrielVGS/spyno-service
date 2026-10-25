@@ -96,7 +96,7 @@ Garantias:
   contam como congeladas se eram de shadow.
 
   `SPYNO_SHADOW_LEARN=1` restaura o comportamento anterior à 2.3 (update com
-  (x, 0, y), features sobre os `*_proposed`), que não foi validado.
+  (x, 0, y), sendo x calculado com os `*_proposed`), que não foi validado.
 
   Os contadores `*_proposed` do contexto
   (`notifs_today_proposed`, `fatigue_proposed`, `minutes_since_last_proposed`)

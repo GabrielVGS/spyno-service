@@ -11,6 +11,8 @@ services:
       SPYNO_DB_URL: postgresql+psycopg://spyno:${POSTGRES_PASSWORD:-spyno}@db:5432/spyno_decision
       SPYNO_POLICY: ${SPYNO_POLICY:-ts_hybrid}
       SPYNO_SHADOW: ${SPYNO_SHADOW:-1}
+      # Em shadow a posterior fica congelada; 1 faz ela aprender com (x, 0, y) (não validado).
+      SPYNO_SHADOW_LEARN: ${SPYNO_SHADOW_LEARN:-0}
       # Sem token o serviço responde 503 em /v1/* (fail closed).
       SPYNO_DECISION_TOKEN: ${SPYNO_DECISION_TOKEN:-}
       SPYNO_CHECKPOINT_DIR: /app/checkpoints
