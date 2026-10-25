@@ -103,7 +103,14 @@ policy_posteriors = Table(
     # dia cujo fechamento produziu esta posterior
     Column("day", Date, nullable=False),
     Column("saved_at", DateTime(timezone=True), nullable=False),
+    # desde o contrato 2.3: a posterior foi aprendida com o serviço em shadow
+    # (SPYNO_SHADOW_LEARN=1). Nula nas linhas gravadas antes da coluna: origem
+    # desconhecida (ver app.create_app, que confere o histórico de decisões)
+    Column("learned_in_shadow", Boolean),
 )
+
+#: Colunas acrescentadas a `policy_posteriors` depois da criação (contrato 2.3).
+POSTERIOR_COLUMNS = ("learned_in_shadow",)
 
 
 def _utc(dt: datetime) -> datetime:
@@ -159,15 +166,22 @@ class Store:
         banco antigo falharia. As linhas antigas ficam com as colunas novas nulas
         e, por terem outra `policy_version`, nunca treinam a política atual.
         """
-        existentes = {c["name"] for c in inspect(self.engine).get_columns("decisions")}
-        faltando = [c for c in V2_COLUMNS if c not in existentes]
+        faltando = self._acrescentar(decisions, V2_COLUMNS)
+        if faltando:
+            log.warning("tabela decisions migrada para o esquema v2: %s", ", ".join(faltando))
+        extra = self._acrescentar(policy_posteriors, POSTERIOR_COLUMNS)
+        if extra:
+            log.warning("tabela policy_posteriors migrada (contrato 2.3): %s", ", ".join(extra))
+        return faltando
+
+    def _acrescentar(self, tabela: Table, colunas) -> list[str]:
+        existentes = {c["name"] for c in inspect(self.engine).get_columns(tabela.name)}
+        faltando = [c for c in colunas if c not in existentes]
         if faltando:
             with self.engine.begin() as conn:
                 for nome in faltando:
-                    col = decisions.c[nome]
-                    tipo = col.type.compile(dialect=self.engine.dialect)
-                    conn.execute(text(f"ALTER TABLE decisions ADD COLUMN {nome} {tipo}"))
-            log.warning("tabela decisions migrada para o esquema v2: %s", ", ".join(faltando))
+                    tipo = tabela.c[nome].type.compile(dialect=self.engine.dialect)
+                    conn.execute(text(f"ALTER TABLE {tabela.name} ADD COLUMN {nome} {tipo}"))
         return faltando
 
     # ---- decisões --------------------------------------------------------
@@ -243,7 +257,8 @@ class Store:
             ).first() is not None
 
     def close_day(self, day, policy_version: str, updates_applied: int,
-                  snapshot: dict | None = None, digest: str | None = None) -> bool:
+                  snapshot: dict | None = None, digest: str | None = None,
+                  learned_in_shadow: bool = False) -> bool:
         """Registra o fechamento e, se houver, a posterior resultante.
 
         As duas escritas vão na mesma transação: ou o dia fica fechado com a
@@ -261,7 +276,8 @@ class Store:
                 if snapshot is not None:
                     values = {"snapshot": json.dumps(snapshot, default=float),
                               "digest": digest, "schema": snapshot.get("schema", "v1"),
-                              "day": day, "saved_at": now}
+                              "day": day, "saved_at": now,
+                              "learned_in_shadow": bool(learned_in_shadow)}
                     done = conn.execute(
                         update(policy_posteriors)
                         .where(policy_posteriors.c.policy_version == policy_version)
@@ -295,11 +311,27 @@ class Store:
         with self.engine.begin() as conn:
             rows = conn.execute(
                 select(policy_posteriors.c.policy_version, policy_posteriors.c.day,
-                       policy_posteriors.c.digest)
+                       policy_posteriors.c.digest, policy_posteriors.c.learned_in_shadow)
                 .order_by(policy_posteriors.c.saved_at.desc())
             ).mappings().all()
         return [{"policy_version": r["policy_version"], "day": r["day"].isoformat(),
-                 "digest": r["digest"]} for r in rows]
+                 "digest": r["digest"], "learned_in_shadow": r["learned_in_shadow"]}
+                for r in rows]
+
+    def shadow_trained(self, policy_version: str) -> int:
+        """Decisões de shadow desta versão que treinaram (o shadow aprendia).
+
+        É o que permite reconhecer, numa linha de posterior anterior à coluna
+        `learned_in_shadow`, que o histórico da linhagem passou por shadow com
+        aprendizado (o comportamento de antes do contrato 2.3).
+        """
+        with self.engine.begin() as conn:
+            return int(conn.execute(
+                select(func.count()).select_from(decisions)
+                .where(decisions.c.policy_version == policy_version)
+                .where(decisions.c.shadow.is_(True))
+                .where(decisions.c.trained.is_(True))
+            ).scalar_one())
 
     def closed_days(self) -> list[dict]:
         """Dias fechados por /v1/end-day, em ordem."""

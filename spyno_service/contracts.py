@@ -100,6 +100,10 @@ class DecideResponse(BaseModel):
     update_eligible: bool = Field(description="O ponto é treinável: elegível pelo backend, sem "
                                   "guardrail que bloquearia um envio e sem contingência. "
                                   "Treina de fato só se learning_frozen=false")
+    shadow_override: bool = Field(default=False, description="Resposta repetida de uma "
+                                  "decisão gravada fora do shadow, com o serviço agora em "
+                                  "shadow: executed_action forçada a 0 (propensity 1); o "
+                                  "registro original no log não muda (desde o contrato 2.3)")
     learning_frozen: bool = Field(default=False, description="Decidido com a posterior "
                                   "congelada (shadow sem SPYNO_SHADOW_LEARN): o desfecho é "
                                   "registrado, mas nunca treina (desde o contrato 2.3)")

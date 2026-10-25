@@ -77,6 +77,20 @@ def create_app(policy=None, store=None, config=None) -> FastAPI:
     persisted_day, skipped = None, []
     if persistable:
         row = store.load_posterior(policy_version)
+        tainted = None if row is None else _shadow_taint(row, store, policy_version)
+        if tainted is not None and not cfg.shadow_learn:
+            # Posterior aprendida em shadow (SPYNO_SHADOW_LEARN=1, ou banco
+            # anterior à 2.3 em que o shadow treinava): não é o estado validado.
+            # Sobe-se do estado inicial, sem apagar a linha.
+            skipped.append({"policy_version": policy_version, "day": row["day"].isoformat(),
+                            "digest": row["digest"],
+                            "learned_in_shadow": row.get("learned_in_shadow"),
+                            "reason": tainted})
+            log.warning("posterior persistida de %s (dia %s) NÃO carregada: %s; servindo "
+                        "o estado inicial (%s). SPYNO_SHADOW_LEARN=1 a carregaria. O próximo "
+                        "end-day fora do shadow sobrescreve essa linha.",
+                        policy_version, row["day"], tainted, init)
+            row = None
         if row is not None:
             try:
                 chosen.load_snapshot(row["snapshot"])
@@ -89,12 +103,13 @@ def create_app(policy=None, store=None, config=None) -> FastAPI:
                     f"posterior persistida de {policy_version} não confere com o digest "
                     f"gravado ({row['digest']})")
             source, persisted_day = "persisted", row["day"].isoformat()
-        skipped = [v for v in store.persisted_versions()
-                   if v["policy_version"] != policy_version]
-        if skipped:
+        outras = [{**v, "reason": "outra_policy_version"} for v in store.persisted_versions()
+                  if v["policy_version"] != policy_version]
+        if outras:
             log.warning("posteriors persistidas de outras versões NÃO carregadas "
                         "(servindo %s): %s", policy_version,
-                        ", ".join(f"{v['policy_version']}@{v['day']}" for v in skipped))
+                        ", ".join(f"{v['policy_version']}@{v['day']}" for v in outras))
+        skipped += outras
 
     app = FastAPI(
         title="Spyno — serviço de decisão",
@@ -230,7 +245,15 @@ def create_app(policy=None, store=None, config=None) -> FastAPI:
         # viraria exploração extra e corromperia a propensão registrada.
         existing = store.get(decision_id)
         if existing is not None:
-            return _to_response(existing)
+            resp = _to_response(existing)
+            if cfg.shadow and resp.executed_action != 0:
+                # Decisão gravada fora do shadow e repetida com o serviço já em
+                # shadow (reinício na mesma hora): nada pode ser enviado. A
+                # resposta força a abstenção; o registro original não é reescrito.
+                resp = resp.model_copy(update={
+                    "executed_action": 0, "propensity": 1.0, "shadow": True,
+                    "guardrail_reason": "shadow", "shadow_override": True})
+            return resp
 
         raw = req.context.model_dump()
         obs, basis = _effective_context(req.context, cfg.shadow)
@@ -427,7 +450,8 @@ def create_app(policy=None, store=None, config=None) -> FastAPI:
             # dois lotes.
             try:
                 closed = store.close_day(req.date, ctx["policy_version"], n, snapshot=snap,
-                                         digest=None if snap is None else digest(snap))
+                                         digest=None if snap is None else digest(snap),
+                                         learned_in_shadow=ctx["config"].shadow)
             except Exception as exc:
                 log.exception("fechamento do dia %s não foi gravado", req.date)
                 return EndDayResponse(ok=False, date=req.date,
@@ -484,6 +508,22 @@ def _to_response(record: dict) -> DecideResponse:
         guardrail_reason=record["guardrail_reason"],
         latency_ms=record["latency_ms"],
     )
+
+
+def _shadow_taint(row: dict, store, policy_version: str) -> str | None:
+    """Motivo para tratar a posterior persistida como aprendida em shadow, ou None.
+
+    `learned_in_shadow` nulo (linha anterior à 2.3): origem desconhecida. Conta
+    como aprendida em shadow se o log tem decisões de shadow desta versão que
+    treinaram, porque antes da 2.3 o shadow sempre treinava. Sem essas
+    decisões no log (ou com o log apagado), a linha é carregada.
+    """
+    flag = row.get("learned_in_shadow")
+    if flag:
+        return "aprendida_em_shadow"
+    if flag is None and store.shadow_trained(policy_version) > 0:
+        return "origem_desconhecida_com_shadow_treinando_no_historico"
+    return None
 
 
 def _decided_frozen(record: dict) -> bool:
