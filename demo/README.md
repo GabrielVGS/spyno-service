@@ -120,4 +120,7 @@ simulada.
   proposta é igual à recomendada.
 - Nenhuma propensity zero: executada, recomendada e por braço nos pontos
   elegíveis. Nos inelegíveis, π = [1, 0, 0, 0] e a executada tem propensity 1.
-  P(enviar) fica dentro do clipping. Nenhuma decisão caiu na contingência.
+  P(enviar) fica dentro do clipping, cada braço de envio fica em π ≥
+  `arm_floor` e 1/π ≤ `max_importance_weight`, os dois lidos do contrato
+  (padrão p05 desde 2026-10-26: 0,05/3 e 60; as saídas anteriores a essa data
+  são de p10: 1/30 e 30). Nenhuma decisão caiu na contingência.

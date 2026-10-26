@@ -49,9 +49,10 @@ Garantias:
 - **Ação recomendada e executada são campos distintos.** Um envio bloqueado por
   guardrail não é uma abstenção escolhida pela política.
 - **Probability clipping e propensão exata.** Nos pontos elegíveis, P(enviar)
-  fica em `[SPYNO_CLIP_MIN, SPYNO_CLIP_MAX]` (padrão [0,1; 0,9]) e cada braço de
-  envio tem probabilidade de pelo menos `SPYNO_ARM_FLOOR` (padrão 1/30 ≈ 0,0333;
-  ver abaixo). A ação é sorteada dessa distribuição, e a propensão registrada é
+  fica em `[SPYNO_CLIP_MIN, SPYNO_CLIP_MAX]` (padrão [0,05; 0,9], "p05", desde
+  2026-10-26; antes [0,1; 0,9]) e cada braço de envio tem probabilidade de pelo
+  menos `SPYNO_ARM_FLOOR` (padrão 0,05/3 ≈ 0,0167; antes 1/30; ver abaixo). A
+  ação é sorteada dessa distribuição, e a propensão registrada é
   exatamente a dela, nunca 0. O esquema completo está em
   `spyno_service/policies/clipping.py`.
   `recommended_propensity` é P(ação recomendada); `propensity` é P(ação
@@ -293,36 +294,69 @@ máximo para qualquer alvo determinístico é 1/min(f, 1 − p_max), exposto em
 
 | configuração | P(enviar) mínima | π mínima por braço | peso máximo |
 |---|---|---|---|
-| v2 sem piso (`SPYNO_ARM_FLOOR=0`) | 0,1 | 0,0033 | ~300 |
-| **padrão**: f = p_min/3 = 1/30 | 0,1 | 0,0333 | **30** |
+| v2 sem piso (`SPYNO_CLIP_MIN=0.1 SPYNO_ARM_FLOOR=0`) | 0,1 | 0,0033 | ~300 |
+| **padrão p05** (desde 2026-10-26): p_min = 0,05, f = p_min/3 = 0,05/3 | 0,05 | 0,0167 | **60** |
+| p10 (padrão até 2026-10-25): `SPYNO_CLIP_MIN=0.1 SPYNO_ARM_FLOOR=0.03333333333333333` | 0,1 | 0,0333 | 30 |
 | `SPYNO_CLIP_MIN=0.3 SPYNO_ARM_FLOOR=0.1` | 0,3 | 0,1 | 10 |
 
-O padrão é f = p_min/3 porque é o maior piso que **não aumenta a exploração
-mínima**: P(enviar) ≥ 0,1 continua sendo o único custo fixo, e o peso cai de ~300
-para 30 (um fator 10). Pesos ≤ 10 exigiriam f = 0,1 por braço e, com três braços,
-P(enviar) ≥ 0,3 em toda hora elegível. Com 16 pontos horários fora do silêncio
-(22h–6h), isso dá ≥ 4,8 envios esperados por dia antes de cota e intervalo, contra
-≥ 1,6 no padrão: a cota diária de 3 se esgotaria quase todo dia só por exploração,
-um custo de fadiga que não se justifica antes de haver dados reais. Por isso o serviço exige
-3·f ≤ p_min e recusa subir; quem quiser pesos menores sobe os dois juntos.
+f = p_min/3 é o maior piso que **não aumenta a exploração mínima**: P(enviar) ≥
+p_min continua sendo o único custo fixo. Pesos ≤ 10 exigiriam f = 0,1 por braço e,
+com três braços, P(enviar) ≥ 0,3 em toda hora elegível. Com 16 pontos horários fora
+do silêncio (22h–6h), isso dá ≥ 4,8 envios esperados por dia antes de cota e
+intervalo, contra ≥ 0,8 com p05 (≥ 1,6 com p10): a cota diária de 3 se esgotaria
+quase todo dia só por exploração, um custo de fadiga que não se justifica antes de
+haver dados reais. Por isso o serviço exige 3·f ≤ p_min e recusa subir; quem quiser
+pesos menores sobe os dois juntos. O piso tem de ser p_min/3 em double ou menor:
+`SPYNO_ARM_FLOOR=0.016667` (arredondado para cima) é **recusado** com
+`SPYNO_CLIP_MIN=0.05`; use `0.016666666666666666` (o `repr` de 0.05/3).
 
-O custo do padrão: quando a massa de envio está no mínimo (0,1), os três braços
-ficam exatamente em 1/30 e a política não expressa preferência entre eles; acima
-do mínimo, os braços que ficariam abaixo de 1/30 sobem para 1/30 e os demais
+**Por que p05 e não p10 (evidência só sintética).** No simulador, na configuração
+servida (warm-start, features do backend, cota 3), baixar o piso de 0,1 para 0,05
+aumentou E[treinos]/usuário/semana em 10 de 22 contrastes (t pareado + Holm, m = 66,
+e IC95 bootstrap pareado; 20 sementes held-out, mesmas sementes nas variantes),
+nenhum significativamente negativo; no PMData ficou n.s. O mecanismo proposto (o
+piso força envios onde o TS não enviaria e gasta a cota) é hipótese, não isolada.
+O custo vai para a OPE: o peso máximo dobra (30 → 60) e, para um alvo MRT p = 0,25,
+o ESS/n caiu de ≈ 0,60–0,65 para ≈ 0,48–0,53. Pisos menores (p02, peso 150) renderam
+mais no simulador, mas pioram a OPE e não foram adotados. Nada disso foi medido com
+usuários reais. Detalhes: `results/floor_served_conclusao.md` no spyno-decision
+(`run_floor_served.py`).
+
+O custo do piso: quando a massa de envio está no mínimo (p_min), os três braços
+ficam exatamente em f e a política não expressa preferência entre eles; acima
+do mínimo, os braços que ficariam abaixo de f sobem para f e os demais
 perdem essa massa na mesma proporção entre si (a razão entre eles se mantém).
 Se nenhum braço está abaixo do piso, nada muda. A abstenção tem piso
 1 − p_max = 0,1 (peso ≤ 10). Na `ts_binary` (um braço de envio) o piso é
-redundante: o braço já recebe a massa toda, ≥ p_min. O peso máximo vale para
+redundante: o braço já recebe a massa toda, ≥ p_min (peso ≤ 1/0,05 = 20 com p05). O peso máximo vale para
 alvos com suporte em {0} ∪ S; na `ts_binary`, um alvo que use os braços 1 ou 2
 tem peso infinito, porque eles têm π = 0.
 
-**Migração.** O padrão de `SPYNO_ARM_FLOOR` (1/30) supõe `SPYNO_CLIP_MIN` ≥ 0,1.
-Quem usa `SPYNO_CLIP_MIN` < 0,1 precisa definir `SPYNO_ARM_FLOOR` ≤
-`SPYNO_CLIP_MIN`/3 (por exemplo 0,05/3 para `SPYNO_CLIP_MIN=0.05`), ou `0` para
-o comportamento da v2 sem piso; senão o serviço recusa a configuração na subida.
+**Migração p10 → p05 (2026-10-26).** O padrão de `SPYNO_ARM_FLOOR` (0,05/3) supõe
+`SPYNO_CLIP_MIN` ≥ 0,05. Quem usa `SPYNO_CLIP_MIN` < 0,05 precisa definir
+`SPYNO_ARM_FLOOR` ≤ `SPYNO_CLIP_MIN`/3, ou `0` para o comportamento da v2 sem
+piso; senão o serviço recusa a configuração na subida. Para manter o p10, defina
+os dois: `SPYNO_CLIP_MIN=0.1 SPYNO_ARM_FLOOR=0.03333333333333333`.
 
-Mudar `SPYNO_ARM_FLOOR` muda a `policy_version` (o clipping entra no hash), e
-decisões da versão anterior ficam no log sem treinar a nova.
+Mudar o clipping muda a `policy_version` (o clipping entra no hash), e:
+
+- o artefato de warm-start não depende do clipping (ele é conferido por formato,
+  esquema, features, política e custo) e carrega na nova versão;
+- uma posterior persistida da versão p10 **não** é carregada: a subida não falha,
+  a linhagem p05 recomeça do warm-start (ou do prior) e a linha antiga aparece em
+  `skipped_persisted` com `reason: outra_policy_version` no `/v1/policy-state`
+  (e no log). O que a linhagem p10 aprendeu fora do shadow se perde; para manter,
+  continue em p10;
+- decisões da versão anterior ficam no log, e desfechos delas que chegarem depois
+  são registrados sem treinar a nova (`policy_version_diferente`);
+- o `decision_id` inclui a `policy_version`: um tick na mesma hora da troca gera
+  uma decisão nova.
+
+O contrato continua 2.3: os campos `clip_min`, `arm_floor` e
+`max_importance_weight` já existiam e só mudam de valor padrão, e o backend não
+os lê (ele confere a janela `outcome_window_min` e as features, e lê `shadow` e
+`daily_cap`). Desde 2026-10-26 eles reportam o clipping da política servida (o mesmo da
+`policy_version`), não uma cópia da configuração.
 
 Contexto: `notifs_today` é a contagem bruta do dia (o guardrail compara com
 `SPYNO_DAILY_CAP`); a política a vê ÷ 5, como no simulador. `fbm_obs` continua
