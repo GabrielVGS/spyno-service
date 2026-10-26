@@ -736,6 +736,11 @@ def verificar(confere, contrato, notifs, decisoes, dias, usuarios, posterior, es
     pis = [n["probabilidades_bracos"] for n in notifs
            if n["probabilidades_bracos"] and n["contexto"]["eligible"]]
     piso, w_max = contrato["arm_floor"], contrato["max_importance_weight"]
+    # ts_binary (pi[1] = pi[2] = 0) ou política sem clipping (w_max None): reprova sem quebrar.
+    if piso is None or w_max is None or any(min(pi) <= 0 for pi in pis):
+        confere("pi por braço de envio >= arm_floor e 1/pi <= max_importance_weight nos elegíveis",
+                False, f"arm_floor {piso}, max_importance_weight {w_max}, braço com pi = 0")
+        return
     confere("pi por braço de envio >= arm_floor e 1/pi <= max_importance_weight nos elegíveis",
             all(min(pi[1:]) >= piso - 1e-12 and 1.0 / min(pi) <= w_max + 1e-9 for pi in pis),
             f"arm_floor {piso:.6g}, max_importance_weight {w_max:g}, "
