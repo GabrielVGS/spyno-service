@@ -731,6 +731,16 @@ def verificar(confere, contrato, notifs, decisoes, dias, usuarios, posterior, es
     confere("P(enviar) clipada em [clip_min, clip_max] nos pontos elegíveis",
             all(contrato["clip_min"] - 1e-9 <= p <= contrato["clip_max"] + 1e-9 for p in p_envio),
             f"{min(p_envio):.3f}..{max(p_envio):.3f}" if p_envio else "sem pontos")
+    # Piso por braço (padrão p05: 0,05/3) e peso de importância máximo do contrato
+    # (60 no padrão), nos braços de envio e na abstenção dos pontos elegíveis.
+    pis = [n["probabilidades_bracos"] for n in notifs
+           if n["probabilidades_bracos"] and n["contexto"]["eligible"]]
+    piso, w_max = contrato["arm_floor"], contrato["max_importance_weight"]
+    confere("pi por braço de envio >= arm_floor e 1/pi <= max_importance_weight nos elegíveis",
+            all(min(pi[1:]) >= piso - 1e-12 and 1.0 / min(pi) <= w_max + 1e-9 for pi in pis),
+            f"arm_floor {piso:.6g}, max_importance_weight {w_max:g}, "
+            f"maior 1/pi observado {max(1.0 / min(pi) for pi in pis):.1f}" if pis
+            else "sem pontos")
 
 
 def resumir(notifs, decisoes, dias, treinos, contrato, shadow, tick_ms):
