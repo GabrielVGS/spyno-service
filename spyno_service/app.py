@@ -178,8 +178,12 @@ def create_app(policy=None, store=None, config=None) -> FastAPI:
         ctx = request.app.state.ctx
         c = ctx["config"]
         pol = ctx["policy"]
-        w_max = (pol.clip.max_importance_weight(len(pol.send_arms))
-                 if isinstance(pol, ClippedPolicy) else None)
+        # O clipping reportado é o da política servida (é ele que entra na
+        # policy_version e gera as propensões), não o da Config: as duas só
+        # divergem se a política foi injetada com outro ClipConfig.
+        clipped = isinstance(pol, ClippedPolicy)
+        clip = pol.clip if clipped else None
+        w_max = clip.max_importance_weight(len(pol.send_arms)) if clipped else None
         return ContractInfo(
             contract_version=CONTRACT_VERSION,
             policy=c.policy,
@@ -189,8 +193,11 @@ def create_app(policy=None, store=None, config=None) -> FastAPI:
             shadow=c.shadow,
             features=list(FEATURES),
             arms=list(ARMS),
-            clip_min=c.clip_min, clip_max=c.clip_max, arm_mix=c.arm_mix,
-            arm_floor=c.arm_floor, max_importance_weight=w_max,
+            clip_min=clip.p_min if clipped else c.clip_min,
+            clip_max=clip.p_max if clipped else c.clip_max,
+            arm_mix=clip.arm_mix if clipped else c.arm_mix,
+            arm_floor=clip.arm_floor if clipped else c.arm_floor,
+            max_importance_weight=w_max,
             daily_cap=c.daily_cap, cooldown_min=c.cooldown_min,
             quiet_start_h=c.quiet_start_h, quiet_end_h=c.quiet_end_h,
             posterior_init=ctx["posterior"]["init"],
