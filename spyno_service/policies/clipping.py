@@ -6,7 +6,8 @@ O Thompson Sampling puro pode chegar a probabilidade de envio 0 ou 1 num
 contexto. Isso destrói a sobreposição de que a avaliação off-policy depende e
 deixa a política sem exploração. Os sistemas implantados limitam essa
 probabilidade: [0,1; 0,8] em Liao et al. (2020), [0,2; 0,8] no Oralytics. Aqui o
-padrão é [0,1; 0,9], configurável (`SPYNO_CLIP_MIN`, `SPYNO_CLIP_MAX`).
+padrão é [0,05; 0,9] (p05, desde 2026-10-26; antes [0,1; 0,9], p10), configurável
+(`SPYNO_CLIP_MIN`, `SPYNO_CLIP_MAX`).
 
 Antes (v1) a ação vinha de UMA amostra da posterior e a propensão era estimada
 à parte, com outras 64 amostras: as duas não correspondiam ao mesmo sorteio e a
@@ -25,9 +26,9 @@ Esquema (v2), num ponto elegível
        share_k = (1 − η)·vitórias_k / Σ_{j∈S} vitórias_j + η / |S|
    com η = `SPYNO_ARM_MIX` (padrão 0,1). Se nenhum braço de envio venceu, share
    é uniforme em S. Sozinho, este passo só garante p̃_envio·share_k ≥ p_min·η/|S|
-   (≈ 0,0033 no padrão), daí o passo 4.
+   (≈ 0,0017 no padrão), daí o passo 4.
 4. **Piso por braço de envio.** Cada braço de S recebe pelo menos f =
-   `SPYNO_ARM_FLOOR` (padrão 1/30 ≈ 0,0333). Os braços que ficariam abaixo de f
+   `SPYNO_ARM_FLOOR` (padrão 0,05/3 ≈ 0,0167). Os braços que ficariam abaixo de f
    sobem para f; os demais repartem o resto da massa de envio na proporção de
    share_k (projeção por *water-filling*: os braços já acima do piso não mudam
    de ordem e, se nenhum estiver abaixo, nada muda). A massa total de envio
@@ -42,11 +43,15 @@ p_min·η/|S| = 0,1·0,1/3 ≈ 0,0033: para uma política-alvo determinística q
 escolhe um braço específico, o peso de importância π_alvo/π chegava a ~300 e a
 OPE sobre o log ficava com variância enorme. Com o piso, o peso máximo para
 qualquer alvo determinístico é 1/min(f, 1 − p_max) (ver
-`max_importance_weight`). O padrão f = p_min/3 = 1/30 limita o peso a 30 sem
-aumentar a exploração mínima: P(enviar) ≥ 0,1 continua sendo o único custo
-fixo. Pesos ≤ 10 exigiriam f = 0,1 e, portanto, P(enviar) ≥ 0,3 em toda hora
-elegível (`SPYNO_CLIP_MIN=0.3 SPYNO_ARM_FLOOR=0.1`). `SPYNO_ARM_FLOOR=0`
-reproduz a v2 sem piso.
+`max_importance_weight`). O padrão p05 (p_min = 0,05, f = p_min/3 = 0,05/3)
+limita o peso a 60 sem aumentar a exploração mínima: P(enviar) ≥ 0,05 continua
+sendo o único custo fixo. O padrão anterior p10 (`SPYNO_CLIP_MIN=0.1
+SPYNO_ARM_FLOOR=0.03333333333333333`) limita o peso a 30; no simulador, ele
+custou E[treinos] em parte dos mundos (ver o README, "Piso de envio"). Pesos ≤ 10
+exigiriam f = 0,1 e, portanto, P(enviar) ≥ 0,3 em toda hora elegível
+(`SPYNO_CLIP_MIN=0.3 SPYNO_ARM_FLOOR=0.1`). `SPYNO_ARM_FLOOR=0` reproduz a v2
+sem piso. Um f arredondado para cima (0.016667 com p_min 0,05) é recusado:
+exige-se 3·f ≤ p_min.
 
 Por que a propensão é exata
 ---------------------------
@@ -76,11 +81,13 @@ _EPS = 1e-12
 
 @dataclass(frozen=True)
 class ClipConfig:
-    p_min: float = 0.1
+    # Padrões = os do serviço (config.py): p05. Os experimentos do
+    # spyno-decision usam p10 explícito.
+    p_min: float = 0.05
     p_max: float = 0.9
     arm_mix: float = 0.1
     #: Piso absoluto de π(k) para cada braço de envio k ∈ S. 0 desliga.
-    arm_floor: float = 1.0 / 30.0
+    arm_floor: float = 0.05 / 3.0
 
     def __post_init__(self):
         if not (0.0 < self.p_min <= self.p_max < 1.0):

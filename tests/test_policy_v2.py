@@ -25,7 +25,7 @@ from spyno_service.policies.clipping import ClipConfig, ClippedPolicy, clip_dist
 
 TOKEN = "token-de-teste"
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
-CLIP = ClipConfig(p_min=0.1, p_max=0.9, arm_mix=0.1)
+CLIP = ClipConfig(p_min=0.1, p_max=0.9, arm_mix=0.1, arm_floor=1.0 / 30.0)  # p10
 
 
 def _context(hour=10, notifs_today=0, minutes_since_last=None, fbm_obs=0.7, **extra):
@@ -143,16 +143,36 @@ def test_clip_config_invalida(p_min, p_max, mix):
 #: interior, empates, um braço de envio zerado.
 _WINS = [(0, 0, 0, 100), (100, 0, 0, 0), (0, 100, 0, 0), (50, 10, 10, 30),
          (5, 90, 5, 0), (1, 1, 1, 1), (99, 0, 0, 1), (0, 33, 33, 34), (10, 0, 90, 0)]
-_CLIPS = [ClipConfig(), ClipConfig(0.1, 0.9, 0.1, 0.0), ClipConfig(0.3, 0.9, 0.1, 0.1),
+#: Padrão anterior (p10), ainda servível por variável de ambiente.
+P10 = ClipConfig(0.1, 0.9, 0.1, 1.0 / 30.0)
+_CLIPS = [ClipConfig(), P10, ClipConfig(0.1, 0.9, 0.1, 0.0), ClipConfig(0.3, 0.9, 0.1, 0.1),
           ClipConfig(0.2, 0.8, 0.5, 0.05), ClipConfig(0.1, 0.9, 1.0, 1 / 30)]
 
 
 def test_padrao_do_piso_e_p_min_sobre_tres():
     from spyno_service.config import Config
 
-    assert ClipConfig().arm_floor == pytest.approx(0.1 / 3)
-    assert Config().arm_floor == pytest.approx(ClipConfig().arm_floor)
+    assert ClipConfig().p_min == 0.05
+    assert ClipConfig().arm_floor == 0.05 / 3   # double exato: 3·f <= p_min
+    assert Config().arm_floor == ClipConfig().arm_floor
     assert ClipConfig.from_config(Config()) == ClipConfig()
+
+
+def test_padrao_p05_peso_maximo_60():
+    """Padrão de produção p05 (2026-10-26): peso máximo 1/min(f, 1 − p_max) = 60."""
+    clip = ClipConfig()
+    assert (clip.p_min, clip.p_max, clip.arm_mix) == (0.05, 0.9, 0.1)
+    assert clip.max_importance_weight(3) == pytest.approx(60.0)
+    # binário: o braço de envio tem p_min = 0,05; pior caso 1/0,05 = 20
+    assert clip.max_importance_weight(1) == pytest.approx(20.0)
+    assert clip.tag() == "clip[0.05,0.9]mix0.1floor0.0166667"
+
+
+def test_piso_arredondado_para_cima_e_recusado():
+    """0.016667 (arredondado) estoura 3·f <= p_min; só 0.05/3 em double passa."""
+    with pytest.raises(ValueError, match="arm_floor"):
+        ClipConfig(0.05, 0.9, 0.1, 0.016667)
+    assert ClipConfig(0.05, 0.9, 0.1, float(repr(0.05 / 3))) == ClipConfig()
 
 
 @pytest.mark.parametrize("clip", _CLIPS, ids=lambda c: c.tag())
@@ -193,15 +213,18 @@ def test_piso_na_massa_minima_reparte_uniforme():
     entre braços.
     """
     pi = clip_distribution(np.array([100.0, 0, 0, 5]), (1, 2, 3), ClipConfig())
+    np.testing.assert_allclose(pi[1:], 0.05 / 3)
+    pi = clip_distribution(np.array([100.0, 0, 0, 5]), (1, 2, 3), P10)
     np.testing.assert_allclose(pi[1:], 1 / 30)
 
 
 def test_peso_maximo_reportado():
     assert ClipConfig(0.1, 0.9, 0.1, 0.0).max_importance_weight(3) == pytest.approx(300.0)
-    assert ClipConfig().max_importance_weight(3) == pytest.approx(30.0)
+    assert P10.max_importance_weight(3) == pytest.approx(30.0)
+    assert ClipConfig().max_importance_weight(3) == pytest.approx(60.0)
     assert ClipConfig(0.3, 0.9, 0.1, 0.1).max_importance_weight(3) == pytest.approx(10.0)
-    # binário: o único braço de envio tem p_min; o pior caso é a abstenção
-    assert ClipConfig().max_importance_weight(1) == pytest.approx(10.0)
+    # binário: o único braço de envio tem p_min; com p10 o pior caso é a abstenção
+    assert P10.max_importance_weight(1) == pytest.approx(10.0)
 
 
 @pytest.mark.parametrize("floor", [-0.01, 0.04, 0.1])
@@ -215,7 +238,7 @@ def test_piso_maior_exige_subir_p_min():
 
 
 def test_sorteio_respeita_o_piso():
-    pol = ClippedPolicy(Recorder(wins=(0, 0, 0, 10)), ClipConfig(), n_samples=1, seed=5)
+    pol = ClippedPolicy(Recorder(wins=(0, 0, 0, 10)), P10, n_samples=1, seed=5)
     arms = np.array([pol.decide_with_distribution("u", _context(), True)[0]
                      for _ in range(20000)])
     for k in (1, 2):

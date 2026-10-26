@@ -27,7 +27,7 @@ ROOT = Path(__file__).resolve().parents[1]
 WARM = ROOT / "warmstart" / "ts_hybrid-v2-c0.05.json"
 TOKEN = "token-de-teste"
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
-CLIP = ClipConfig(p_min=0.1, p_max=0.9, arm_mix=0.1)
+CLIP = ClipConfig(p_min=0.1, p_max=0.9, arm_mix=0.1, arm_floor=1.0 / 30.0)  # p10
 
 
 def _context(hour=10, notifs_today=0, **extra):
@@ -376,7 +376,69 @@ def test_padroes_shadow_ligado_e_sem_warm_start():
          "round(c.arm_floor, 6), c.shadow_learn, c.learning_frozen)"],
         cwd=ROOT, env={**env, "PYTHONPATH": str(ROOT)}, capture_output=True, text=True,
         check=True).stdout.split()
-    assert out == ["True", "None", "ts_hybrid", "0.1", "0.9", "0.033333", "False", "True"]
+    assert out == ["True", "None", "ts_hybrid", "0.05", "0.9", "0.016667", "False", "True"]
+
+
+_SUBIDA_PADRAO = """
+import json, sys
+from fastapi.testclient import TestClient
+from spyno_service.app import create_app
+tok = {"Authorization": "Bearer t"}
+with TestClient(create_app(), headers=tok) as c:
+    k = c.get("/v1/contract").json()
+    s = c.get("/v1/policy-state").json()
+    d = c.post("/v1/decide", json={"user_key": "u",
+        "decision_point": "2026-10-22T10:00:00-03:00", "eligible": True,
+        "context": json.loads(sys.argv[1])}).json()
+print(json.dumps({"contract": k, "state": s, "decide": d}))
+"""
+
+
+def _subida_padrao(tmp_path, db, **env_extra):
+    """Sobe o app com a Config do ambiente (padrões reais), num processo limpo."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("SPYNO_")}
+    env.update({"PYTHONPATH": str(ROOT), "SPYNO_DB_URL": f"sqlite+pysqlite:///{db}",
+                "SPYNO_DECISION_TOKEN": "t", "SPYNO_SHADOW": "0",
+                "SPYNO_PROPENSITY_SAMPLES": "50", **env_extra})
+    out = subprocess.run([sys.executable, "-c", _SUBIDA_PADRAO, json.dumps(_context())],
+                         cwd=tmp_path, env=env, capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr[-2000:]
+    return json.loads(out.stdout.strip().splitlines()[-1])
+
+
+def test_subida_com_padroes_p05_carrega_warm_start_e_ignora_persistida_p10(tmp_path):
+    """Migração p10 -> p05: o artefato (sem dependência de clipping) carrega na
+    nova policy_version; a posterior persistida da versão p10 fica registrada em
+    skipped_persisted e não é carregada, sem derrubar a subida."""
+    db = tmp_path / "mig.db"
+    p10 = _subida_padrao(tmp_path, db, SPYNO_WARMSTART_SNAPSHOT=str(WARM),
+                         SPYNO_CLIP_MIN="0.1", SPYNO_ARM_FLOOR=repr(1.0 / 30.0))
+    assert p10["contract"]["max_importance_weight"] == pytest.approx(30.0)
+    v10 = p10["state"]["policy_version"]
+    # grava uma posterior persistida da linhagem p10 (aquecida)
+    with _client(_app(db, warm=WARM, policy=bandit.ts_hybrid(
+            clip=ClipConfig(0.1, 0.9, 0.1, 1.0 / 30.0), n_samples=50))) as c:
+        _train_one(c, point="2026-10-22T11:00:00-03:00")
+        assert c.post("/v1/end-day", json={"date": "2026-10-22"}).json()["ok"] is True
+        v10_50 = c.get("/v1/policy-state").json()["policy_version"]
+
+    p05 = _subida_padrao(tmp_path, db, SPYNO_WARMSTART_SNAPSHOT=str(WARM))
+    k, s, d = p05["contract"], p05["state"], p05["decide"]
+    assert (k["clip_min"], k["clip_max"], k["arm_mix"]) == (0.05, 0.9, 0.1)
+    assert k["arm_floor"] == 0.05 / 3
+    assert k["max_importance_weight"] == pytest.approx(60.0)
+    assert k["posterior_init"] == "warmstart"
+    assert k["contract_version"] == "2.3"
+    assert s["posterior_source"] == "warmstart"
+    assert s["warmstart"]["sha256"] == k["warmstart_sha256"]
+    assert s["policy_version"] not in (v10, v10_50)
+    assert k["policy_version"] == s["policy_version"]
+    skipped = {v["policy_version"]: v["reason"] for v in s["skipped_persisted"]}
+    assert skipped == {v10_50: "outra_policy_version"}
+    # propensões da nova versão respeitam o piso p05
+    assert d["fallback"] is False and d["policy_version"] == s["policy_version"]
+    assert min(d["arm_probabilities"][1:]) >= 0.05 / 3 - 1e-12
+    assert sum(d["arm_probabilities"][1:]) >= 0.05 - 1e-12
 
 
 def test_warm_start_mantem_shadow(tmp_path):

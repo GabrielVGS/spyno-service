@@ -43,12 +43,14 @@ class Config:
     #: nos pontos elegíveis; a massa de envio é repartida com mistura uniforme
     #: arm_mix e cada braço de envio recebe ao menos arm_floor (probabilidade
     #: absoluta; exige 3·arm_floor <= clip_min). O peso de importância máximo
-    #: de um alvo determinístico fica em 1/min(arm_floor, 1 - clip_max): 30 no
-    #: padrão. Ver policies/clipping.py e o README.
-    clip_min: float = float(os.getenv("SPYNO_CLIP_MIN", "0.1"))
+    #: de um alvo determinístico fica em 1/min(arm_floor, 1 - clip_max): 60 no
+    #: padrão (p05: clip_min 0,05, arm_floor 0,05/3). O padrão anterior (p10:
+    #: SPYNO_CLIP_MIN=0.1 SPYNO_ARM_FLOOR=0.03333333333333333) dá peso 30. Ver
+    #: policies/clipping.py e o README.
+    clip_min: float = float(os.getenv("SPYNO_CLIP_MIN", "0.05"))
     clip_max: float = float(os.getenv("SPYNO_CLIP_MAX", "0.9"))
     arm_mix: float = float(os.getenv("SPYNO_ARM_MIX", "0.1"))
-    arm_floor: float = float(os.getenv("SPYNO_ARM_FLOOR", repr(1.0 / 30.0)))
+    arm_floor: float = float(os.getenv("SPYNO_ARM_FLOOR", repr(0.05 / 3.0)))
 
     #: Janela de atribuição do desfecho, em minutos.
     outcome_window_min: int = int(os.getenv("SPYNO_OUTCOME_WINDOW_MIN", "180"))
