@@ -719,3 +719,26 @@ def test_acao_proposta_reconstruida_para_linha_antiga():
     assert _proposed_action({**base, "shadow": True, "guardrail_reason": "shadow"}) == 2
     assert _proposed_action({**base, "shadow": True, "guardrail_reason": "cooldown"}) == 0
     assert _proposed_action({**base, "shadow": False, "guardrail_reason": "quiet_hours"}) == 0
+
+
+# ---- estado da posterior (verificação ponta a ponta) ------------------------
+
+def test_policy_state_muda_so_no_end_day_com_updates(tmp_path):
+    pol = bandit.ts_hybrid(clip=CLIP, n_samples=50)
+    with _client(tmp_path, pol) as c:
+        assert c.get("/v1/policy-state",
+                     headers={"Authorization": "Bearer errado"}).status_code == 401
+        s0 = c.get("/v1/policy-state").json()
+        b = _decide(c)
+        _feedback(c, b["decision_id"], outcome="responded")
+        s1 = c.get("/v1/policy-state").json()
+        assert s1["pending_updates"] == 1
+        assert s1["posterior_digest"] == s0["posterior_digest"], "update só entra no end-day"
+        assert c.post("/v1/end-day", json={"date": "2026-10-22"}).json()["updates_applied"] == 1
+        s2 = c.get("/v1/policy-state").json()
+        again = c.post("/v1/end-day", json={"date": "2026-10-22"}).json()
+        s3 = c.get("/v1/policy-state").json()
+    assert s2["posterior_digest"] != s1["posterior_digest"]
+    assert s2["pending_updates"] == 0
+    assert s2["days_closed"] == [{"day": "2026-10-22", "updates_applied": 1}]
+    assert again["already_closed"] and s3["posterior_digest"] == s2["posterior_digest"]

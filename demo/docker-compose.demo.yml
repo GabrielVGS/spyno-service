@@ -1,0 +1,102 @@
+# Demo F4 "dia simulado": Postgres + API do backend + spyno-service.
+#
+# Use pelo roteiro (python3 demo/run_demo.py), que fixa o nome do projeto
+# (spyno-demo-f4), as portas e o relógio simulado. Todas as portas ficam em
+# 127.0.0.1 e fora das padrão, para não colidir com outros contêineres.
+#
+# BACKEND_DIR: raiz do repositório do backend (com Dockerfile). Relativo a este
+# arquivo; padrão: a worktree ../../_wt/backend-pr2.
+name: spyno-demo-f4
+
+x-db-url: &db-url postgresql://spyno:${DEMO_POSTGRES_PASSWORD}@db:5432/spyno?schema=public
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: spyno
+      POSTGRES_PASSWORD: ${DEMO_POSTGRES_PASSWORD}
+      POSTGRES_DB: spyno
+    volumes:
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "127.0.0.1:${DEMO_PG_PORT:-55480}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U spyno -d spyno_decision"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  decision:
+    build:
+      context: ..
+      args:
+        COM_PPO: "0"
+    environment:
+      SPYNO_DB_URL: postgresql+psycopg://spyno:${DEMO_POSTGRES_PASSWORD}@db:5432/spyno_decision
+      SPYNO_POLICY: ${DEMO_POLICY:-ts_hybrid}
+      SPYNO_SHADOW: ${DEMO_SHADOW:-1}
+      SPYNO_DECISION_TOKEN: ${DEMO_DECISION_TOKEN}
+      SPYNO_OUTCOME_WINDOW_MIN: "180"
+      # Orçamento de latência padrão (0,2 s): uma contingência aparece no log
+      # como propensity_method = "fallback".
+    ports:
+      - "127.0.0.1:${DEMO_DECISION_PORT:-58480}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]
+      interval: 2s
+      timeout: 3s
+      retries: 60
+
+  api:
+    build:
+      context: ${BACKEND_DIR:-../../_wt/backend-pr2}
+    image: spyno-demo-f4-api
+    # A imagem roda node como PID 1, que ignora SIGTERM: sem init, o stop
+    # esperaria 10 s e o agendador rodaria mais 5 horas simuladas.
+    init: true
+    environment:
+      DATABASE_URL: *db-url
+      PORT: "3000"
+      TZ: America/Sao_Paulo
+      # O relógio de demonstração é recusado com NODE_ENV=production.
+      NODE_ENV: development
+      JWT_SECRET: ${DEMO_JWT_SECRET}
+      RESEND_API_KEY: ${DEMO_RESEND_API_KEY}
+      SPYNO_SERVICE_TOKEN: ${DEMO_SERVICE_TOKEN}
+      SPYNO_DECISION_ENABLED: ${DEMO_DECISION_ENABLED:-false}
+      SPYNO_DECISION_URL: http://decision:8000
+      SPYNO_DECISION_TOKEN: ${DEMO_DECISION_TOKEN}
+      SPYNO_USER_KEY_SECRET: ${DEMO_USER_KEY_SECRET}
+      SPYNO_OUTCOME_WINDOW_MIN: ${DEMO_BACKEND_WINDOW_MIN:-180}
+      SPYNO_DECISION_TIMEOUT_MS: "5000"
+      SPYNO_CONTRACT_RETRY_MS: "1000"
+      SPYNO_TICK_MS: ${DEMO_TICK_MS:-2000}
+      SPYNO_DEMO_CLOCK: ${DEMO_CLOCK:-off}
+      SPYNO_DEMO_CLOCK_START: ${DEMO_CLOCK_START:-}
+      SPYNO_DEMO_CLOCK_ANCHOR_MS: ${DEMO_CLOCK_ANCHOR_MS:-}
+      PRISMA_HIDE_UPDATE_MESSAGE: "1"
+    ports:
+      - "127.0.0.1:${DEMO_API_PORT:-53480}:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+      decision:
+        condition: service_healthy
+
+  # docker compose ... run --rm migrate
+  # A imagem da API traz só as dependências de produção; o CLI do Prisma vem
+  # pelo npx, na mesma versão do package.json.
+  migrate:
+    image: spyno-demo-f4-api
+    profiles: ["setup"]
+    environment:
+      DATABASE_URL: *db-url
+      PRISMA_HIDE_UPDATE_MESSAGE: "1"
+    command: ["npx", "--yes", "prisma@6.19.3", "migrate", "deploy"]
+    depends_on:
+      db:
+        condition: service_healthy

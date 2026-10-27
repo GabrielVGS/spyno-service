@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 import json
 import logging
@@ -130,6 +131,28 @@ def create_app(policy=None, store=None, config=None) -> FastAPI:
     def features() -> dict:
         """Ordem do vetor observável, para o consumidor conferir o contrato."""
         return {"features": list(FEATURES), "policy_schema": POLICY_SCHEMA}
+
+    @v1.get("/policy-state")
+    def policy_state(request: Request) -> dict:
+        """Impressão digital da posterior, para auditoria e verificação ponta a ponta.
+
+        Não expõe os pesos: só um hash do snapshot (m, q, custo), os updates
+        acumulados desde o último end-day e os dias já fechados. É o que permite
+        confirmar de fora que um /v1/end-day com updates mudou a posterior e que
+        um end-day repetido não a muda.
+        """
+        ctx = request.app.state.ctx
+        snap = getattr(ctx["policy"], "snapshot", None)
+        digest = None
+        if callable(snap):
+            try:
+                raw = json.dumps(snap(), sort_keys=True, default=float)
+                digest = hashlib.sha256(raw.encode()).hexdigest()[:16]
+            except Exception:
+                log.exception("snapshot da política falhou")
+        return {"policy_version": ctx["policy_version"], "posterior_digest": digest,
+                "pending_updates": ctx["pending_updates"],
+                "days_closed": ctx["store"].closed_days()}
 
     @v1.post("/decide", response_model=DecideResponse)
     def decide(req: DecideRequest, request: Request) -> DecideResponse:
