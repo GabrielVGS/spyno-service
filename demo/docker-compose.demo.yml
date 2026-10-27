@@ -38,6 +38,11 @@ services:
       SPYNO_SHADOW: ${DEMO_SHADOW:-1}
       SPYNO_DECISION_TOKEN: ${DEMO_DECISION_TOKEN}
       SPYNO_OUTCOME_WINDOW_MIN: "180"
+      # Clipping: padrões do serviço (p05: SPYNO_CLIP_MIN=0.05,
+      # SPYNO_ARM_FLOOR=0.05/3, peso máximo 60). Para p10, defina aqui
+      # SPYNO_CLIP_MIN: "0.1" e SPYNO_ARM_FLOOR: "0.03333333333333333".
+      # Vazio: prior. run_demo.py --warmstart liga o artefato versionado.
+      SPYNO_WARMSTART_SNAPSHOT: ${DEMO_WARMSTART_SNAPSHOT:-}
       # Orçamento de latência padrão (0,2 s): uma contingência aparece no log
       # como propensity_method = "fallback".
     ports:

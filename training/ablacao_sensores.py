@@ -9,6 +9,12 @@ Três condições sobre os mesmos mundos e as mesmas sementes de desfecho:
              num modelo linear
 
 Comparação pareada por semente: cada mundo é percorrido pelas três condições.
+
+ATENÇÃO (2026-10-25): no esquema v2, `build_policy` devolve a política com o
+adaptador `_CompatibilidadeHerdada`, que zera os sensores depois de `Substitui`.
+As três condições rodam, portanto, SEM sensores, e o script não mede o que diz.
+Além disso, é exploratório: cold start, 10 sementes, IC normal sem Holm, sem
+JSON de saída. Não use o resultado como evidência; ver o README ("Warm-start").
 """
 
 from __future__ import annotations

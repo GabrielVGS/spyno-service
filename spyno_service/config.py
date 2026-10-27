@@ -17,6 +17,19 @@ class Config:
     #: e o backend não envia nada. Padrão ligado: nada chega ao usuário por acidente.
     shadow: bool = os.getenv("SPYNO_SHADOW", "1") not in ("0", "false", "False")
 
+    #: Em shadow a posterior fica CONGELADA por padrão: decisões e desfechos são
+    #: registrados, mas nenhum update entra no buffer e o /v1/end-day fecha o
+    #: dia sem tocar em m/q. O shadow vira só coleta de logs, e a posterior que
+    #: sai dele é exatamente a que entrou (o artefato de warm-start ou a última
+    #: persistida fora do shadow). SPYNO_SHADOW_LEARN=1 restaura o comportamento
+    #: anterior (treinar com (x, 0, y) e contadores *_proposed), não validado.
+    shadow_learn: bool = os.getenv("SPYNO_SHADOW_LEARN", "0") in ("1", "true", "True")
+
+    @property
+    def learning_frozen(self) -> bool:
+        """A posterior não aprende neste processo (shadow sem SPYNO_SHADOW_LEARN)."""
+        return self.shadow and not self.shadow_learn
+
     #: Orçamento de latência da decisão. Estourado, responde pela regra de contingência.
     decide_timeout_s: float = float(os.getenv("SPYNO_DECIDE_TIMEOUT", "0.2"))
 
@@ -30,12 +43,14 @@ class Config:
     #: nos pontos elegíveis; a massa de envio é repartida com mistura uniforme
     #: arm_mix e cada braço de envio recebe ao menos arm_floor (probabilidade
     #: absoluta; exige 3·arm_floor <= clip_min). O peso de importância máximo
-    #: de um alvo determinístico fica em 1/min(arm_floor, 1 - clip_max): 30 no
-    #: padrão. Ver policies/clipping.py e o README.
-    clip_min: float = float(os.getenv("SPYNO_CLIP_MIN", "0.1"))
+    #: de um alvo determinístico fica em 1/min(arm_floor, 1 - clip_max): 60 no
+    #: padrão (p05: clip_min 0,05, arm_floor 0,05/3). O padrão anterior (p10:
+    #: SPYNO_CLIP_MIN=0.1 SPYNO_ARM_FLOOR=0.03333333333333333) dá peso 30. Ver
+    #: policies/clipping.py e o README.
+    clip_min: float = float(os.getenv("SPYNO_CLIP_MIN", "0.05"))
     clip_max: float = float(os.getenv("SPYNO_CLIP_MAX", "0.9"))
     arm_mix: float = float(os.getenv("SPYNO_ARM_MIX", "0.1"))
-    arm_floor: float = float(os.getenv("SPYNO_ARM_FLOOR", repr(1.0 / 30.0)))
+    arm_floor: float = float(os.getenv("SPYNO_ARM_FLOOR", repr(0.05 / 3.0)))
 
     #: Janela de atribuição do desfecho, em minutos.
     outcome_window_min: int = int(os.getenv("SPYNO_OUTCOME_WINDOW_MIN", "180"))
@@ -53,6 +68,12 @@ class Config:
     auth_disabled: bool = os.getenv("SPYNO_DECISION_AUTH", "") == "disabled"
 
     checkpoint_dir: str = os.getenv("SPYNO_CHECKPOINT_DIR", "./checkpoints")
+
+    #: Artefato de warm-start da posterior (gerado por training/build_warmstart.py).
+    #: Vazio: a linhagem começa do prior. Definido e incompatível com a política
+    #: ativa (outro esquema, features, política ou custo): o serviço não sobe.
+    #: Uma posterior persistida da mesma policy_version tem precedência sobre ele.
+    warmstart_snapshot: str | None = os.getenv("SPYNO_WARMSTART_SNAPSHOT") or None
 
 
 CONFIG = Config()

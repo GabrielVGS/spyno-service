@@ -69,13 +69,22 @@ decisions = Table(
     # auditoria do treino
     Column("trained", Boolean),
     Column("train_skip_reason", String(48)),
+    # o serviço estava com a posterior congelada (shadow sem SPYNO_SHADOW_LEARN)
+    # quando decidiu: o desfecho deste ponto nunca treina, mas fica no log para
+    # a OPE; `update_eligible` continua dizendo se o ponto seria treinável
+    Column("learning_frozen", Boolean),
+    # desde o contrato 2.3: instante em que uma decisão gravada fora do shadow
+    # foi repetida com o serviço em shadow e a resposta forçou a abstenção. A
+    # decisão original fica como estava; a execução efetiva desta linha passa a
+    # ser 0 (propensão 1) e o desfecho dela nunca treina
+    Column("shadow_override_at", DateTime(timezone=True)),
 )
 
 #: Colunas acrescentadas no esquema v2. Bancos criados antes recebem um
 #: ALTER TABLE explícito na abertura (ver Store._migrar).
 V2_COLUMNS = ("eligible", "update_eligible", "policy_context", "counter_basis",
               "recommended_propensity", "arm_probs", "trained", "train_skip_reason",
-              "proposed_action")
+              "proposed_action", "learning_frozen", "shadow_override_at")
 
 #: Dias já fechados por /v1/end-day: é o que torna o fechamento idempotente.
 policy_days = Table(
@@ -85,6 +94,28 @@ policy_days = Table(
     Column("updates_applied", Integer, nullable=False),
     Column("closed_at", DateTime(timezone=True), nullable=False),
 )
+
+#: Última posterior de cada `policy_version`, gravada na mesma transação que o
+#: fechamento do dia (ver Store.close_day). Uma linha por versão: a subida só
+#: carrega a da versão servida (ver posterior.py).
+policy_posteriors = Table(
+    "policy_posteriors", METADATA,
+    Column("policy_version", String(128), primary_key=True),
+    # JSON do snapshot (m, q, custo, esquema, features)
+    Column("snapshot", Text, nullable=False),
+    Column("digest", String(16), nullable=False),
+    Column("schema", String(16), nullable=False),
+    # dia cujo fechamento produziu esta posterior
+    Column("day", Date, nullable=False),
+    Column("saved_at", DateTime(timezone=True), nullable=False),
+    # desde o contrato 2.3: a posterior foi aprendida com o serviço em shadow
+    # (SPYNO_SHADOW_LEARN=1). Nula nas linhas gravadas antes da coluna: origem
+    # desconhecida (ver app.create_app, que confere o histórico de decisões)
+    Column("learned_in_shadow", Boolean),
+)
+
+#: Colunas acrescentadas a `policy_posteriors` depois da criação (contrato 2.3).
+POSTERIOR_COLUMNS = ("learned_in_shadow",)
 
 
 def _utc(dt: datetime) -> datetime:
@@ -140,15 +171,22 @@ class Store:
         banco antigo falharia. As linhas antigas ficam com as colunas novas nulas
         e, por terem outra `policy_version`, nunca treinam a política atual.
         """
-        existentes = {c["name"] for c in inspect(self.engine).get_columns("decisions")}
-        faltando = [c for c in V2_COLUMNS if c not in existentes]
+        faltando = self._acrescentar(decisions, V2_COLUMNS)
+        if faltando:
+            log.warning("tabela decisions migrada para o esquema v2: %s", ", ".join(faltando))
+        extra = self._acrescentar(policy_posteriors, POSTERIOR_COLUMNS)
+        if extra:
+            log.warning("tabela policy_posteriors migrada (contrato 2.3): %s", ", ".join(extra))
+        return faltando
+
+    def _acrescentar(self, tabela: Table, colunas) -> list[str]:
+        existentes = {c["name"] for c in inspect(self.engine).get_columns(tabela.name)}
+        faltando = [c for c in colunas if c not in existentes]
         if faltando:
             with self.engine.begin() as conn:
                 for nome in faltando:
-                    col = decisions.c[nome]
-                    tipo = col.type.compile(dialect=self.engine.dialect)
-                    conn.execute(text(f"ALTER TABLE decisions ADD COLUMN {nome} {tipo}"))
-            log.warning("tabela decisions migrada para o esquema v2: %s", ", ".join(faltando))
+                    tipo = tabela.c[nome].type.compile(dialect=self.engine.dialect)
+                    conn.execute(text(f"ALTER TABLE {tabela.name} ADD COLUMN {nome} {tipo}"))
         return faltando
 
     # ---- decisões --------------------------------------------------------
@@ -208,6 +246,15 @@ class Store:
             )
         return True, None, outcome
 
+    def mark_shadow_override(self, decision_id: str, when: datetime | None = None) -> None:
+        """Registra (uma vez) que a resposta desta decisão foi forçada a 0 pelo shadow."""
+        with self.engine.begin() as conn:
+            conn.execute(
+                update(decisions).where(decisions.c.decision_id == decision_id)
+                .where(decisions.c.shadow_override_at.is_(None))
+                .values(shadow_override_at=_utc(when or datetime.now(timezone.utc)))
+            )
+
     def mark_trained(self, decision_id: str, trained: bool, reason: str | None) -> None:
         with self.engine.begin() as conn:
             conn.execute(
@@ -223,19 +270,82 @@ class Store:
                 select(policy_days.c.day).where(policy_days.c.day == day)
             ).first() is not None
 
-    def close_day(self, day, policy_version: str, updates_applied: int) -> bool:
-        """Registra o fechamento. Devolve False se o dia já estava fechado."""
+    def close_day(self, day, policy_version: str, updates_applied: int,
+                  snapshot: dict | None = None, digest: str | None = None,
+                  learned_in_shadow: bool = False) -> bool:
+        """Registra o fechamento e, se houver, a posterior resultante.
+
+        As duas escritas vão na mesma transação: ou o dia fica fechado com a
+        posterior dele gravada, ou nada muda. Devolve False se o dia já estava
+        fechado (nesse caso a posterior também não é regravada).
+        """
         from sqlalchemy.exc import IntegrityError
 
+        now = datetime.now(timezone.utc)
         try:
             with self.engine.begin() as conn:
                 conn.execute(policy_days.insert().values(
                     day=day, policy_version=policy_version,
-                    updates_applied=updates_applied,
-                    closed_at=datetime.now(timezone.utc)))
+                    updates_applied=updates_applied, closed_at=now))
+                if snapshot is not None:
+                    values = {"snapshot": json.dumps(snapshot, default=float),
+                              "digest": digest, "schema": snapshot.get("schema", "v1"),
+                              "day": day, "saved_at": now,
+                              "learned_in_shadow": bool(learned_in_shadow)}
+                    done = conn.execute(
+                        update(policy_posteriors)
+                        .where(policy_posteriors.c.policy_version == policy_version)
+                        .values(**values)).rowcount
+                    if not done:
+                        conn.execute(policy_posteriors.insert().values(
+                            policy_version=policy_version, **values))
         except IntegrityError:
-            return False
+            # Só a corrida no fechamento do mesmo dia é "já fechado"; qualquer
+            # outra violação (posterior inválida) sobe, com a transação desfeita.
+            if self.day_closed(day):
+                return False
+            raise
         return True
+
+    def load_posterior(self, policy_version: str) -> dict | None:
+        """Posterior persistida desta versão: {snapshot, digest, schema, day, saved_at}."""
+        with self.engine.begin() as conn:
+            row = conn.execute(
+                select(policy_posteriors)
+                .where(policy_posteriors.c.policy_version == policy_version)
+            ).mappings().first()
+        if row is None:
+            return None
+        out = dict(row)
+        out["snapshot"] = json.loads(out["snapshot"])
+        return out
+
+    def persisted_versions(self) -> list[dict]:
+        """Versões com posterior persistida (sem os pesos), da mais recente à mais antiga."""
+        with self.engine.begin() as conn:
+            rows = conn.execute(
+                select(policy_posteriors.c.policy_version, policy_posteriors.c.day,
+                       policy_posteriors.c.digest, policy_posteriors.c.learned_in_shadow)
+                .order_by(policy_posteriors.c.saved_at.desc())
+            ).mappings().all()
+        return [{"policy_version": r["policy_version"], "day": r["day"].isoformat(),
+                 "digest": r["digest"], "learned_in_shadow": r["learned_in_shadow"]}
+                for r in rows]
+
+    def shadow_trained(self, policy_version: str) -> int:
+        """Decisões de shadow desta versão que treinaram (o shadow aprendia).
+
+        É o que permite reconhecer, numa linha de posterior anterior à coluna
+        `learned_in_shadow`, que o histórico da linhagem passou por shadow com
+        aprendizado (o comportamento de antes do contrato 2.3).
+        """
+        with self.engine.begin() as conn:
+            return int(conn.execute(
+                select(func.count()).select_from(decisions)
+                .where(decisions.c.policy_version == policy_version)
+                .where(decisions.c.shadow.is_(True))
+                .where(decisions.c.trained.is_(True))
+            ).scalar_one())
 
     def closed_days(self) -> list[dict]:
         """Dias fechados por /v1/end-day, em ordem."""

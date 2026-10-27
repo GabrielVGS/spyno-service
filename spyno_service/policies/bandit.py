@@ -67,6 +67,31 @@ class _CompatibilidadeHerdada:
         return getattr(self._inner, item)
 
 
+def warm_start_rows(rows: list[dict]) -> list[dict]:
+    """Linhas do `bandit_log` do simulador → linhas no vetor servido (v2).
+
+    As linhas do `spyno_sim.simulate.rollout` já estão no espaço da política
+    (`notifs_today` ÷ 5), então NÃO passam por `policy_obs`. O que muda é o
+    que o serviço zera: os dois sensores e `fbm_obs`, exatamente como o
+    adaptador `_CompatibilidadeHerdada` faz em decide e update. Sem isso o
+    warm-start aprenderia pesos para colunas que o serviço sempre entrega
+    zeradas.
+    """
+    return [{**r, **{k: 0.0 for k in _CHAVES_HERDADAS}} for r in rows]
+
+
+def warm_start(policy, rows: list[dict]):
+    """Ajusta a posterior inicial de uma política servida com linhas do simulador.
+
+    Usa o `warm_start` original do `spyno-decision` (Laplace sobre os pontos
+    elegíveis do log MRT), sobre o vetor servido (`warm_start_rows`).
+    """
+    fit = getattr(policy, "warm_start", None)
+    if not callable(fit):
+        raise TypeError(f"a política '{getattr(policy, 'name', '?')}' não tem warm-start")
+    return fit(warm_start_rows(rows))
+
+
 def _missing(name: str) -> None:
     raise RuntimeError(f"a política '{name}' depende do pacote spyno_decision")
 

@@ -97,7 +97,17 @@ class DecideResponse(BaseModel):
     propensity_method: Literal["monte-carlo", "exact", "fallback"]
     counter_basis: Literal["executed", "proposed"] = Field(description="Contadores usados nas "
                                                            "features e nos guardrails")
-    update_eligible: bool = Field(description="O desfecho deste ponto pode treinar a política")
+    update_eligible: bool = Field(description="O ponto é treinável: elegível pelo backend, sem "
+                                  "guardrail que bloquearia um envio e sem contingência. "
+                                  "Treina de fato só se learning_frozen=false")
+    shadow_override: bool = Field(default=False, description="Decisão gravada fora do shadow "
+                                  "e repetida com o serviço em shadow: executed_action forçada "
+                                  "a 0 (propensity 1), learning_frozen=true, e toda repetição "
+                                  "seguinte devolve o mesmo; o log guarda a decisão original e "
+                                  "shadow_override_at (desde o contrato 2.3)")
+    learning_frozen: bool = Field(default=False, description="Decidido com a posterior "
+                                  "congelada (shadow sem SPYNO_SHADOW_LEARN): o desfecho é "
+                                  "registrado, mas nunca treina (desde o contrato 2.3)")
     policy: str
     policy_version: str
     shadow: bool
@@ -143,6 +153,9 @@ class EndDayResponse(BaseModel):
     already_closed: bool = False
     updates_applied: int = 0
     error: str | None = None
+    #: Posterior congelada (shadow): o dia foi fechado sem ajuste e sem gravar
+    #: posterior (desde o contrato 2.3).
+    learning_frozen: bool = False
 
 
 class ContractInfo(BaseModel):
@@ -170,6 +183,18 @@ class ContractInfo(BaseModel):
     cooldown_min: int
     quiet_start_h: int
     quiet_end_h: int
+    #: Estado inicial da linhagem (desde o contrato 2.2): "warmstart" ou
+    #: "prior". Faz parte da policy_version. Campos aditivos: o backend não
+    #: precisa lê-los.
+    posterior_init: str | None = None
+    #: sha256 do artefato de warm-start carregado, ou None.
+    warmstart_sha256: str | None = None
+    #: Desde o contrato 2.3. True: a posterior não aprende neste processo
+    #: (shadow sem SPYNO_SHADOW_LEARN); a policy_version não muda com isso.
+    learning_frozen: bool = False
+    #: SPYNO_SHADOW_LEARN: em shadow, treinar com (x, 0, y) (comportamento
+    #: anterior à 2.3, não validado). Padrão False.
+    shadow_learn: bool = False
 
 
 class Health(BaseModel):
@@ -179,3 +204,9 @@ class Health(BaseModel):
     shadow: bool
     decisions: int
     pending_outcomes: int
+    #: De onde veio a posterior em uso na subida: "persisted", "warmstart" ou
+    #: "prior" (desde o contrato 2.2). None para políticas sem posterior.
+    posterior_source: str | None = None
+    #: A posterior está congelada (shadow sem SPYNO_SHADOW_LEARN): decide e
+    #: feedback só registram, end-day não ajusta (desde o contrato 2.3).
+    learning_frozen: bool = False
