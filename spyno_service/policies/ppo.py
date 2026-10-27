@@ -15,7 +15,13 @@ essas três entradas, o que quebraria a comparabilidade com as demais políticas
 e invalidaria qualquer avaliação off-policy sobre os registros resultantes.
 
 Por isso esta classe carrega um checkpoint treinado sobre o MESMO vetor
-observável das demais políticas. Os cinco checkpoints antigos ficam como
+observável das demais políticas. `vectorize` parte do contexto do contrato
+(notifs_today bruto) e o converte para o espaço da política.
+
+Esquema v2: o vetor perdeu `fbm_obs` e passou a ter `DIM` = 13 dimensões. O
+checkpoint `ppo_observable.zip` foi treinado no esquema v1 (14 dimensões) e é
+recusado de forma explícita pela checagem de dimensão abaixo até ser retreinado
+com `training/train_ppo.py`. Servido, o PPO passa pelo mesmo clipping dos bandits. Os cinco checkpoints antigos ficam como
 artefato histórico do trabalho anterior, não como modelo servido.
 """
 
@@ -113,3 +119,10 @@ class PPOPolicy:
         out[: len(probs)] = probs[:N_ARMS]
         total = out.sum()
         return out / total if total > 0 else np.full(N_ARMS, 1.0 / N_ARMS)
+
+    #: Braços de envio, para o clipping.
+    send_arms = (1, 2, 3)
+
+    def arm_wins(self, obs: dict, n_samples: int = 0) -> np.ndarray:
+        """Entrada do ClippedPolicy: a distribuição categórica, sem amostragem."""
+        return self.estimate_propensities(obs)
