@@ -17,7 +17,6 @@ from ..config import CONFIG
 from ..features import FEATURES, POLICY_SCHEMA, policy_obs
 from .clipping import ClipConfig, ClippedPolicy
 
-
 #: O `spyno_decision.features.vectorize` ainda espera estas chaves. Elas saíram
 #: do vetor do serviço; o adaptador as repõe com zero, que é exatamente a
 #: condição "removido" medida nas ablações (sensores e `fbm_obs`). Coluna
@@ -123,12 +122,11 @@ def _servable_classes():
     A extensão fica aqui, e não no pacote original, para não alterar o código
     que produziu os resultados já publicados.
     """
-    from spyno_decision.hybrid import HDIM, HybridLogisticTS, hybrid_x
-    from spyno_decision.features import vectorize
-    from spyno_decision.policy import (N_ARMS, BinaryLogisticTS,
-                                       DisjointLogisticTS, _sigmoid)
-
     import numpy as np
+
+    from spyno_decision.features import vectorize
+    from spyno_decision.hybrid import HDIM, HybridLogisticTS, hybrid_x
+    from spyno_decision.policy import N_ARMS, BinaryLogisticTS, DisjointLogisticTS, _sigmoid
 
     cost_vec = lambda c: c * np.array([0.0, 1.0, 1.0, 1.0])  # noqa: E731
 

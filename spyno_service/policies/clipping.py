@@ -104,7 +104,7 @@ class ClipConfig:
                 f"piso maior, suba também SPYNO_CLIP_MIN")
 
     @classmethod
-    def from_config(cls, cfg) -> "ClipConfig":
+    def from_config(cls, cfg) -> ClipConfig:
         return cls(p_min=cfg.clip_min, p_max=cfg.clip_max, arm_mix=cfg.arm_mix,
                    arm_floor=cfg.arm_floor)
 

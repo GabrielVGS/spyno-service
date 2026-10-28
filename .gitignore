@@ -220,3 +220,5 @@ __marimo__/
 .streamlit/secrets.toml
 # Saída da demo F4
 demo/out/
+# Bancos SQLite locais (testes e2e, desenvolvimento)
+*.db

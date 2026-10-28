@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 from ..config import CONFIG
 from ..features import POLICY_SCHEMA

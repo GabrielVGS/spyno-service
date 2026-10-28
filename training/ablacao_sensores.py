@@ -29,8 +29,8 @@ for p in (str(_SIM), str(Path(__file__).resolve().parents[1])):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from spyno_sim.config import Demographics                      # noqa: E402
-from spyno_sim.response import ResponseParams                  # noqa: E402
+from spyno_sim.config import Demographics  # noqa: E402
+from spyno_sim.response import ResponseParams  # noqa: E402
 from spyno_sim.simulate import SimConfig, build_world, rollout  # noqa: E402
 
 from spyno_service.policies.registry import build as build_policy  # noqa: E402

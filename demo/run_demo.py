@@ -244,7 +244,7 @@ def main() -> int:
     api = f"http://127.0.0.1:{ENV['DEMO_API_PORT']}"
     svc = f"http://127.0.0.1:{ENV['DEMO_DECISION_PORT']}"
     bearer = {"Authorization": f"Bearer {ENV['DEMO_DECISION_TOKEN']}"}
-    servico_hdr = {"X-Service-Token": ENV["DEMO_SERVICE_TOKEN"]}
+    servico_hdr = {"X-Service-Token": ENV["DEMO_SERVICE_TOKEN"]}  # noqa: F841  (lê o token: falha cedo se faltar no demo.env)
     global OUT
     OUT = OUT / (("shadow" if shadow else "sem-shadow")
                  + ("-warmstart" if args.warmstart else "")

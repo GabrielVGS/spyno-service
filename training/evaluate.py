@@ -32,8 +32,8 @@ def main() -> None:
     from spyno_sim.response import ResponseParams
     from spyno_sim.simulate import SimConfig, build_world, rollout
 
-    from spyno_service.policies.registry import build as build_policy
     from spyno_service.policies.ppo import PPOPolicy
+    from spyno_service.policies.registry import build as build_policy
 
     cfg = SimConfig(n_users=args.users, n_days=args.days, seed=args.seed,
                     llm_mode="stub")

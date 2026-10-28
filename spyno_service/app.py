@@ -7,21 +7,31 @@ import json
 import logging
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeout
 from datetime import datetime, timezone
 
 import numpy as np
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
 
 from .config import CONFIG
-from .contracts import (ARMS, ContractInfo, Context, DecideRequest, DecideResponse,
-                        EndDayRequest, EndDayResponse, FeedbackRequest,
-                        FeedbackResponse, Health)
+from .contracts import (
+    ARMS,
+    Context,
+    ContractInfo,
+    DecideRequest,
+    DecideResponse,
+    EndDayRequest,
+    EndDayResponse,
+    FeedbackRequest,
+    FeedbackResponse,
+    Health,
+)
 from .features import FEATURES, POLICY_SCHEMA
 from .guardrails import apply as apply_guardrails
 from .policies import propensities
-from .policies.clipping import ClippedPolicy
 from .policies.bandit import IncompatibleSnapshotError
+from .policies.clipping import ClippedPolicy
 from .policies.registry import available, build, version
 from .posterior import apply_warmstart, digest, has_posterior, snapshot_of
 from .store import Store, make_decision_id

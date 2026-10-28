@@ -18,8 +18,15 @@ import pytest
 
 os.environ.setdefault("SPYNO_DB_URL", "sqlite+pysqlite:///:memory:")
 
-from spyno_service.features import (DIM, FEATURES, NOTIFS_TODAY_SCALE, POLICY_SCHEMA,
-                                    policy_obs, vectorize, vectorize_policy_space)
+from spyno_service.features import (
+    DIM,
+    FEATURES,
+    NOTIFS_TODAY_SCALE,
+    POLICY_SCHEMA,
+    policy_obs,
+    vectorize,
+    vectorize_policy_space,
+)
 from spyno_service.policies import bandit
 from spyno_service.policies.clipping import ClipConfig, ClippedPolicy, clip_distribution
 
@@ -282,8 +289,8 @@ def test_ts_hybrid_com_posterior_contra_envio_fica_no_piso():
     pol = bandit.ts_hybrid(clip=CLIP, n_samples=500)
     inner = pol._inner._inner
     # posterior concentrada: enviar derruba muito a resposta
-    from spyno_decision.hybrid import HDIM
     from spyno_decision.features import DIM as DDIM
+    from spyno_decision.hybrid import HDIM
     inner.m = np.zeros(HDIM)
     inner.m[DDIM] = -20.0          # bias do bloco w_send
     inner.q = np.full(HDIM, 1e6)
