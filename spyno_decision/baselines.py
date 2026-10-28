@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import numpy as np
-
 
 class _Stateless:
     def start_user(self, user_id): pass

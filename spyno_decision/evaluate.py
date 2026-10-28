@@ -23,7 +23,6 @@ import json
 from pathlib import Path
 
 import numpy as np
-
 from spyno_sim.config import Demographics
 from spyno_sim.response import ResponseParams
 from spyno_sim.simulate import MRTLoggingPolicy, SimConfig, build_world, rollout

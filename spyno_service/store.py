@@ -17,9 +17,24 @@ import json
 import logging
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import (Boolean, Column, Date, DateTime, Float, Integer, MetaData,
-                        String, Table, Text, create_engine, func, inspect, select,
-                        text, update)
+from sqlalchemy import (
+    Boolean,
+    Column,
+    Date,
+    DateTime,
+    Float,
+    Integer,
+    MetaData,
+    String,
+    Table,
+    Text,
+    create_engine,
+    func,
+    inspect,
+    select,
+    text,
+    update,
+)
 
 from .config import CONFIG
 

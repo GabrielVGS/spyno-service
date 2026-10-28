@@ -41,7 +41,6 @@ def fit_laplace(X: np.ndarray, y: np.ndarray, m0: np.ndarray, q0: np.ndarray,
     (bias, dummies de período, janela livre) e o passo sem os termos cruzados
     superestima a curvatura — foi exatamente o bug do warm-start degenerar.
     """
-    d = len(m0)
     w = m0.copy()
     loss = _nll(X, y, w, m0, q0)
     for _ in range(iters):
