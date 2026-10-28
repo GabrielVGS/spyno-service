@@ -422,14 +422,19 @@ avaliação, ablação, sensibilidade e OPE.
 ## Rodando
 
 ```sh
-uv venv && uv pip install -e ".[dev]"
-PYTHONPATH=. .venv/bin/python -m pytest tests/ -q     # testes de contrato
+uv sync --frozen --extra dev                           # ambiente do uv.lock (Python 3.12)
+uv run --frozen pytest -q                              # testes de contrato
 
 SPYNO_POLICY=ts_hybrid SPYNO_SHADOW=1 \
   .venv/bin/uvicorn spyno_service.app:create_app --factory --reload
 
 docker compose up --build                              # Postgres + serviço
 ```
+
+A imagem instala exatamente as versões do `uv.lock` (`uv sync --frozen`),
+roda como o usuário sem privilégios `spyno` (uid 10001) e tem `HEALTHCHECK` no
+`/health`. Base e uv estão fixados (`python:3.12.16-slim-trixie`, uv 0.11.7).
+`--build-arg COM_PPO=1` acrescenta o extra `ppo` (torch).
 
 Ponta a ponta com o backend real (dia simulado, agendador acelerado, export do
 log de `Notificacao`): `python3 demo/run_demo.py`, ver `demo/README.md`.
@@ -443,6 +448,21 @@ log de `Notificacao`): `python3 demo/run_demo.py`, ver `demo/README.md`.
 
 A posterior persistida não tem variável: ela fica no mesmo `SPYNO_DB_URL` das
 decisões (tabela `policy_posteriors`, criada na subida).
+
+## Desenvolvimento
+
+```sh
+uv sync --frozen --extra dev      # + --extra ppo para o PPO (torch), --extra postgres
+make lint                         # ruff check (regras em pyproject.toml)
+make test                         # pytest
+make ci                           # lint + test, como na CI
+make docker                       # docker build local
+```
+
+Mudou alguma dependência no `pyproject.toml`? Rode `uv lock` e versione o
+`uv.lock`. A CI (`.github/workflows/ci.yml`) roda `uv sync --frozen --extra dev`,
+`ruff check` e `pytest`, e um job separado faz `docker build` (sem push). Sem o
+`spyno-sim` ao lado, os testes que rodam o simulador são pulados.
 
 ## Dívidas conhecidas
 
