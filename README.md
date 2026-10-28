@@ -198,7 +198,9 @@ forma), outro custo, outra dimensão, ou política sem posterior (`never`,
 ### Warm-start
 
 `training/build_warmstart.py` gera o artefato versionado
-`warmstart/ts_hybrid-v2-c0.05.json`, e o `docker-compose.yml` o liga por padrão.
+`warmstart/ts_hybrid-v2-c0.1.json`, e o `docker-compose.yml` o liga por padrão.
+O `ts_hybrid-v2-c0.05.json` fica no repositório: é o artefato do padrão anterior
+(c = 0,05), conferido por sha256 nos experimentos do `spyno-decision`.
 `SPYNO_WARMSTART_SNAPSHOT=` (vazio) começa do prior. A receita é a dos
 experimentos do `spyno-decision` que mediram o warm-start
 (`evaluate.run_evaluation`, `run_hybrid_ablation.py`, `run_fbm_ablation.py`),
@@ -209,7 +211,9 @@ com a semente fixa s = 0:
 - log da política MRT (P(enviar) = 0,25, uniforme nos três braços), desfecho
   com semente 90 000+s;
 - `warm_start` original do `spyno-decision`: Laplace sobre os 4 941 pontos
-  elegíveis do log, com o custo c = 0,05 da política servida.
+  elegíveis do log, com o custo c = 0,1 da política servida. O ajuste não
+  depende de c: os dois artefatos têm m e q idênticos bit a bit e só diferem no
+  campo `cost` e na proveniência.
 
 O ajuste é determinístico: duas execuções geram os mesmos m e q (só a proveniência
 muda com os commits), e um teste (pulado sem o `spyno-sim`)
@@ -244,6 +248,7 @@ regerar o artefato em outro commit muda o sha256, mas mantém m, q e, portanto, 
 cold, sintético, 10 sementes) foi medido com o TS *disjoint* com c = 0,03,
 `fbm_obs` e sensores com os valores do simulador. A configuração servida (TS
 híbrido, c = 0,05, três colunas zeradas) não foi medida nesse contraste.
+(Depois foi: `exp/warmstart-served` no `spyno-decision`, com c = 0,05 e p10.)
 
 O que apoia a escolha das colunas, com pesos diferentes:
 
@@ -362,6 +367,33 @@ Contexto: `notifs_today` é a contagem bruta do dia (o guardrail compara com
 `SPYNO_DAILY_CAP`); a política a vê ÷ 5, como no simulador. `fbm_obs` continua
 aceito, mas desde a v2 não entra no vetor das políticas aprendidas.
 
+### Custo de envio c = 0,1 (desde 2026-10-28)
+
+O `ts_hybrid` servido passa a usar c = 0,1 (antes 0,05), com o artefato
+`warmstart/ts_hybrid-v2-c0.1.json`. A escolha vem do `spyno-decision`
+(sintético, simulador; `results/cost_served_conclusao.md` e
+`results/served_divergences_conclusao.md`):
+
+- `run_cost_served.py`: na configuração servida (p05, warm-start do serviço,
+  features do backend), c* = 0,1 foi escolhido nas sementes de seleção
+  300–304, numa grade {0; 0,02; 0,05; 0,1; 0,2};
+- held-out 100–119 (n = 20, mesmas sementes), com cota 3 e janela de 180 min
+  (`run_served_divergences.py`, família de 22 células): c 0,1 − 0,05 deu 6/22
+  contrastes sig. positivos em E[treinos]/usuário/semana e nenhum sig.
+  negativo, e 1,1–4,2 envios a menos por usuário por semana (22/22 sig.).
+
+n.s. não prova equivalência: a defesa do 0,1 é sobretudo o volume menor sem
+perda detectável de treinos.
+
+O custo está no snapshot da posterior, então entra na `policy_version`, como
+o clipping (ver acima):
+
+- a posterior persistida da linhagem c = 0,05 **não** é carregada: a linhagem
+  c = 0,1 recomeça do warm-start e a antiga aparece em `skipped_persisted`;
+- o artefato `c0.05` é recusado com c = 0,1 (outro custo). Para voltar ao padrão
+  anterior, não basta trocar o artefato: o custo vem do código
+  (`bandit.ts_hybrid`), sem variável de ambiente.
+
 ## Políticas
 
 | nome | origem | servível em produção |
@@ -396,7 +428,7 @@ log de `Notificacao`): `python3 demo/run_demo.py`, ver `demo/README.md`.
 
 | variável | padrão | efeito |
 |---|---|---|
-| `SPYNO_WARMSTART_SNAPSHOT` | vazio (prior); no compose, `/app/warmstart/ts_hybrid-v2-c0.05.json` | artefato de warm-start da posterior inicial; entra na `policy_version` |
+| `SPYNO_WARMSTART_SNAPSHOT` | vazio (prior); no compose, `/app/warmstart/ts_hybrid-v2-c0.1.json` | artefato de warm-start da posterior inicial; entra na `policy_version` |
 | `SPYNO_SHADOW_LEARN` | `0` | `1`: em shadow, a posterior aprende com (x, 0, y), como antes da 2.3 (não validado). Sem efeito fora do shadow; não entra na `policy_version` |
 
 A posterior persistida não tem variável: ela fica no mesmo `SPYNO_DB_URL` das

@@ -16,10 +16,10 @@ services:
       # Sem token o serviço responde 503 em /v1/* (fail closed).
       SPYNO_DECISION_TOKEN: ${SPYNO_DECISION_TOKEN:-}
       SPYNO_CHECKPOINT_DIR: /app/checkpoints
-      # Posterior inicial: warm-start sintético do spyno-sim (ts_hybrid, c=0,05).
+      # Posterior inicial: warm-start sintético do spyno-sim (ts_hybrid, c=0,1).
       # Vazio (SPYNO_WARMSTART_SNAPSHOT=) começa do prior. Trocar SPYNO_POLICY
       # exige trocar ou esvaziar este artefato: incompatível, o serviço não sobe.
-      SPYNO_WARMSTART_SNAPSHOT: ${SPYNO_WARMSTART_SNAPSHOT-/app/warmstart/ts_hybrid-v2-c0.05.json}
+      SPYNO_WARMSTART_SNAPSHOT: ${SPYNO_WARMSTART_SNAPSHOT-/app/warmstart/ts_hybrid-v2-c0.1.json}
     volumes:
       - ./checkpoints:/app/checkpoints:ro
     depends_on:

@@ -200,7 +200,7 @@ def _serve(cls, name, cost, seed, snapshot, clip, n_samples):
     return served
 
 
-def ts_hybrid(cost: float = 0.05, seed: int = 0, snapshot: str | Path | None = None,
+def ts_hybrid(cost: float = 0.1, seed: int = 0, snapshot: str | Path | None = None,
               clip: ClipConfig | None = None, n_samples: int | None = None):
     """Thompson Sampling com pooling parcial: o modelo recomendado pela avaliação."""
     try:

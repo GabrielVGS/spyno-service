@@ -24,7 +24,7 @@ from spyno_service.policies.clipping import ClipConfig, ClippedPolicy  # noqa: E
 from spyno_service.posterior import digest  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
-WARM = ROOT / "warmstart" / "ts_hybrid-v2-c0.05.json"
+WARM = ROOT / "warmstart" / "ts_hybrid-v2-c0.1.json"
 TOKEN = "token-de-teste"
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
 CLIP = ClipConfig(p_min=0.1, p_max=0.9, arm_mix=0.1, arm_floor=1.0 / 30.0)  # p10
