@@ -28,6 +28,9 @@ packages = ["spyno_service", "spyno_decision"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+# Cópia vendorizada, conferida por sha256 (spyno_decision/PROVENIENCIA.md e
+# provenance do warm-start): não pode ser reformatada.
+extend-exclude = ["spyno_decision"]
 
 [tool.ruff.lint]
 # Conjunto conservador: erros do pycodestyle e pyflakes, ordem de imports,
