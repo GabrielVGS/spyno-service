@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.7"
+      # Sem o spyno-sim (outro repositório), os testes que rodam o simulador
+      # são pulados; os extras ppo (torch) ficam de fora pelo mesmo motivo.
+      - run: uv sync --frozen --extra dev
+      - run: uv run --frozen ruff check .
+      - run: uv run --frozen pytest -q -rs
+
+  docker:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: docker build (sem push)
+        run: docker build -t spyno-service:ci .
