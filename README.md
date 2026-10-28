@@ -380,7 +380,7 @@ O `ts_hybrid` servido passa a usar c = 0,1 (antes 0,05), com o artefato
 - held-out 100–119 (n = 20, mesmas sementes), com cota 3 e janela de 180 min
   (`run_served_divergences.py`, família de 22 células): c 0,1 − 0,05 deu 6/22
   contrastes sig. positivos em E[treinos]/usuário/semana (4 deles nas 8
-  células de 24 usuários × 56 dias) e nenhum sig. negativo, e 1,1–4,2 envios
+  células de 24 usuários × 56 dias acrescentadas nesse experimento) e nenhum sig. negativo, e 1,1–4,2 envios
   a menos por usuário por semana (22/22 sig.).
 
 A exceção são os mundos de resposta baixa: no intercepto −8 com 12 usuários,
