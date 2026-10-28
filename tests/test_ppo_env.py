@@ -19,6 +19,8 @@ if _SIM.is_dir() and str(_SIM) not in sys.path:
     sys.path.insert(0, str(_SIM))
 
 gym = pytest.importorskip("gymnasium")
+# O ambiente roda o laço do simulador: sem o spyno-sim (ex.: na CI), pula.
+pytest.importorskip("spyno_sim", reason="spyno-sim não disponível")
 
 
 def _env(**kw):
