@@ -453,6 +453,12 @@ decisões (tabela `policy_posteriors`, criada na subida).
 
 ```sh
 uv sync --frozen --extra dev      # + --extra ppo para o PPO (torch), --extra postgres
+```
+
+`uv sync` é exato: remove extras não pedidos. Passe todos os extras na mesma
+linha (ex.: `uv sync --frozen --extra dev --extra ppo`).
+
+```sh
 make lint                         # ruff check (regras em pyproject.toml)
 make test                         # pytest
 make ci                           # lint + test, como na CI
@@ -500,5 +506,13 @@ Mudou alguma dependência no `pyproject.toml`? Rode `uv lock` e versione o
 - `training/ablacao_sensores.py` não compara de fato com e sem sensores: o
   adaptador zera os sensores nas três condições.
 - `fbm_threshold` depende de `fbm_full` e permanece restrito ao simulador.
-- O `spyno-decision` está marcado como não-pacote no seu `pyproject`, então
-  entra por `sys.path`. Ajustável com `SPYNO_DECISION_PATH`.
+- O `spyno-decision` entra como cópia vendorizada em `spyno_decision/`
+  (`spyno_decision/PROVENIENCIA.md`), sincronizada à mão. A subida do serviço não
+  confere o sha256 desses arquivos; quem confere é o artefato de warm-start (que
+  registra os sha256) e o `spyno-decision` (blobs aceitos). Os scripts de
+  `training/` importam o `spyno-sim` por `sys.path` (`SPYNO_SIM_PATH`).
+- Na imagem, `/app` pertence ao usuário `spyno` para que o SQLite padrão
+  (`./spyno_service.db`) possa ser criado. O código é do root, mas o usuário
+  pode renomear entradas de `/app`. Separar um diretório de dados gravável
+  muda o caminho padrão do SQLite e fica para depois. As imagens e as actions
+  estão fixadas por tag, não por digest.

@@ -7,7 +7,7 @@ lint:
 	uv run --frozen ruff check .
 
 test:
-	uv run --frozen pytest -q
+	uv run --frozen pytest -q -rs
 
 ci: lint test
 
