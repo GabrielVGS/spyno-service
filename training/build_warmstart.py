@@ -101,8 +101,8 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--policy", default="ts_hybrid", choices=sorted(_ORIGINAL))
-    ap.add_argument("--cost", type=float, default=0.05,
-                    help="custo c da política servida (padrão decidido: 0,05)")
+    ap.add_argument("--cost", type=float, default=0.1,
+                    help="custo c da política servida (padrão decidido: 0,1; era 0,05 até 28/10/2026)")
     ap.add_argument("--seed", type=int, default=0, help="s: mundo 1000+s, desfecho 90000+s")
     ap.add_argument("--users", type=int, default=12)
     ap.add_argument("--days", type=int, default=28)

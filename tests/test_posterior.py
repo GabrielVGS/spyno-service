@@ -24,7 +24,7 @@ from spyno_service.policies.clipping import ClipConfig  # noqa: E402
 from spyno_service.posterior import digest  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
-WARM = ROOT / "warmstart" / "ts_hybrid-v2-c0.05.json"
+WARM = ROOT / "warmstart" / "ts_hybrid-v2-c0.1.json"
 TOKEN = "token-de-teste"
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
 CLIP = ClipConfig(p_min=0.1, p_max=0.9, arm_mix=0.1, arm_floor=1.0 / 30.0)  # p10
@@ -81,13 +81,15 @@ def _artifact(tmp_path, **changes) -> Path:
 def test_artefato_versionado_no_esquema_servido():
     art = json.loads(WARM.read_text())
     assert art["format"] == "spyno-warmstart/1"
-    assert art["policy"] == "ts_hybrid" and art["cost"] == 0.05
+    assert art["policy"] == "ts_hybrid" and art["cost"] == 0.1
     assert art["schema"] == POLICY_SCHEMA and art["features"] == list(FEATURES)
     assert art["vector"]["service_dim"] == 13
     assert set(art["vector"]["zeroed_columns"]) == {"location_home", "motion_stationary",
                                                     "fbm_obs"}
     assert len(art["m"]) == len(bandit.ts_hybrid(clip=CLIP, n_samples=1).snapshot()["m"])
     assert np.any(np.array(art["m"]) != 0.0), "o warm-start move a média"
+    assert bandit.ts_hybrid(clip=CLIP, n_samples=1).snapshot()["cost"] == art["cost"], \
+        "o artefato do compose tem o custo padrão da fábrica"
     assert art["fit"]["eligible_rows"] > 1000
     assert art["recipe"]["seed"] == 0 and art["recipe"]["outcome_seed"] == 90_000
     cc = art["provenance"]["spyno_decision"].get("crosscheck")

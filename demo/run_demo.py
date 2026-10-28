@@ -226,7 +226,7 @@ def main() -> int:
     ap.add_argument("--manter", action="store_true", help="não derruba os contêineres no fim")
     ap.add_argument("--sem-build", action="store_true", help="reaproveita as imagens já construídas")
     ap.add_argument("--warmstart", action="store_true",
-                    help="serviço sobe com SPYNO_WARMSTART_SNAPSHOT (warmstart/ts_hybrid-v2-c0.05.json)")
+                    help="serviço sobe com SPYNO_WARMSTART_SNAPSHOT (warmstart/ts_hybrid-v2-c0.1.json)")
     ap.add_argument("--reiniciar", action="store_true",
                     help="depois do end-day, reinicia o contêiner decision e confere a posterior "
                          "carregada (em shadow, também o recria com SPYNO_SHADOW=0)")
@@ -236,7 +236,7 @@ def main() -> int:
     shadow = not args.sem_shadow
     ENV["DEMO_SHADOW"] = "1" if shadow else "0"
     ENV["DEMO_WARMSTART_SNAPSHOT"] = (
-        "/app/warmstart/ts_hybrid-v2-c0.05.json" if args.warmstart else "")
+        "/app/warmstart/ts_hybrid-v2-c0.1.json" if args.warmstart else "")
     tick_ms = int(ENV["DEMO_TICK_MS"])
     backend = Path(ENV["BACKEND_DIR"])
     if not (backend / "Dockerfile").exists():
