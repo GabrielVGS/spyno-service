@@ -316,7 +316,7 @@ pesos menores sobe os dois juntos. O piso tem de ser p_min/3 em double ou menor:
 `SPYNO_CLIP_MIN=0.05`; use `0.016666666666666666` (o `repr` de 0.05/3).
 
 **Por que p05 e não p10 (evidência só sintética).** No simulador, na configuração
-servida (warm-start, features do backend, cota 3), baixar o piso de 0,1 para 0,05
+servida (warm-start, features do backend, cota 3, então com c = 0,05), baixar o piso de 0,1 para 0,05
 aumentou E[treinos]/usuário/semana em 10 de 22 contrastes (t pareado + Holm, m = 66,
 e IC95 bootstrap pareado; 20 sementes held-out, mesmas sementes nas variantes),
 nenhum significativamente negativo; no PMData ficou n.s. O mecanismo proposto (o
@@ -379,11 +379,21 @@ O `ts_hybrid` servido passa a usar c = 0,1 (antes 0,05), com o artefato
   300–304, numa grade {0; 0,02; 0,05; 0,1; 0,2};
 - held-out 100–119 (n = 20, mesmas sementes), com cota 3 e janela de 180 min
   (`run_served_divergences.py`, família de 22 células): c 0,1 − 0,05 deu 6/22
-  contrastes sig. positivos em E[treinos]/usuário/semana e nenhum sig.
-  negativo, e 1,1–4,2 envios a menos por usuário por semana (22/22 sig.).
+  contrastes sig. positivos em E[treinos]/usuário/semana (4 deles nas 8
+  células de 24 usuários × 56 dias) e nenhum sig. negativo, e 1,1–4,2 envios
+  a menos por usuário por semana (22/22 sig.).
 
-n.s. não prova equivalência: a defesa do 0,1 é sobretudo o volume menor sem
-perda detectável de treinos.
+A exceção são os mundos de resposta baixa: no intercepto −8 com 12 usuários,
+c 0,1 − 0,05 deu −0,049 [−0,077; −0,022], sig. na família de 14 células do
+`cost_served` (p_Holm 0,040) e n.s. por Holm na de 22 (p_Holm 0,053), com o
+mesmo dado; com as features corrigidas do backend, o PMData 24u também ficou
+negativo (−0,051, IC excluindo 0, n.s. por Holm). n.s. não prova
+equivalência: a defesa do 0,1 é sobretudo o volume menor, sem perda detectável
+de treinos na maioria dos mundos.
+
+O c = 0,1 vale só para o `ts_hybrid`; `ts_disjoint` e `ts_binary` continuam
+com o padrão 0,05. Os resultados servidos anteriores (warm-start servido, shadow
+congelado, piso p05) foram medidos com c = 0,05 e não foram refeitos com 0,1.
 
 O custo está no snapshot da posterior, então entra na `policy_version`, como
 o clipping (ver acima):
