@@ -158,6 +158,18 @@ Garantias:
   `policy_days`. Se a gravação falha, o dia continua aberto e o end-day responde
   `ok=false` (`error="persistencia_*"`); a nova tentativa fecha o dia. Um
   end-day repetido na mesma data não refaz o ajuste nem regrava a posterior.
+- **Buffer do dia aberto reconstruído na subida.** Os updates de um dia ainda
+  não fechado vivem em memória, mas cada um fica registrado em `decisions` com
+  a ordem em que entrou no buffer (`train_seq`). O end-day marca, na mesma
+  transação do fechamento, as decisões que o ajuste consumiu (`applied_day`).
+  Na subida, as treinadas da `policy_version` servida ainda sem `applied_day`
+  são reaplicadas na ordem de `train_seq`: um reinício antes do end-day dá a
+  mesma posterior, bit a bit, que não reiniciar. Ficam de fora as linhas
+  anteriores a essas colunas (sem `train_seq`, não se sabe se já entraram num
+  ajuste), as de shadow sem `SPYNO_SHADOW_LEARN=1` e, com a posterior congelada,
+  todas (são reaplicadas na saída do shadow). Uma linha que não reaplica derruba
+  a subida. Feedback e end-day são serializados por um lock, para que um
+  desfecho no meio do fechamento não entre no ajuste sem ser marcado.
 
 ### Origem da posterior na subida (contrato 2.2)
 
@@ -476,9 +488,6 @@ Mudou alguma dependência no `pyproject.toml`? Rode `uv lock` e versione o
   dimensões); o `ppo_observable.zip` atual é v1 (14) e é recusado. Os cinco checkpoints do `Spyno-Fogg` observam motivação, habilidade
   e sono exatos, sinais que a formulação atual não coleta; a classe recusa
   carregá-los em vez de fabricar as entradas que faltam.
-- Os updates de um dia ainda não fechado vivem em memória. Um reinício antes do
-  end-day os perde, embora o log já os marque `trained=true`; a posterior volta
-  à do último dia fechado.
 - Um dia fechado em shadow fica fechado: se o serviço sai do shadow no mesmo
   dia local, o end-day dessa data responde `already_closed` e os updates do
   resto do dia só entram no ajuste do dia seguinte. `policy_days` não marca

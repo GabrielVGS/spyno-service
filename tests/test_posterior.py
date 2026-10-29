@@ -310,29 +310,94 @@ def test_persistida_de_outra_versao_nao_e_carregada(tmp_path):
     assert v_warm in [v["policy_version"] for v in s["skipped_persisted"]]
 
 
-def test_reinicio_perde_os_updates_do_dia_aberto(tmp_path):
-    """Dívida documentada: o buffer do dia aberto vive em memória.
-
-    Um reinício antes do end-day volta à posterior do último dia fechado; o log
-    continua dizendo trained=true para esses desfechos.
-    """
+def _dia_aberto(tmp_path):
+    """Dia 22 fechado e dois updates no buffer do dia 23; devolve (db, app, decisões)."""
     db = tmp_path / "p.db"
     app = _app(db, warm=WARM)
+    c = _client(app)
+    c.__enter__()
+    _train_one(c)
+    c.post("/v1/end-day", json={"date": "2026-10-22"})
+    abertas = [_train_one(c, point="2026-10-23T10:00:00-03:00"),
+               _train_one(c, point="2026-10-23T11:00:00-03:00", user="v")]
+    assert c.get("/v1/policy-state").json()["pending_updates"] == 2
+    return db, app, c, abertas
+
+
+def test_reinicio_reconstroi_o_buffer_do_dia_aberto(tmp_path):
+    """Reiniciar antes do end-day dá a mesma posterior que não reiniciar, bit a bit."""
+    import shutil
+
+    db, app, c, abertas = _dia_aberto(tmp_path)
+    copia = tmp_path / "reinicio.db"
+    shutil.copy(db, copia)                       # o banco no instante do reinício
+    sem = c.post("/v1/end-day", json={"date": "2026-10-23"}).json()
+    sem_estado = c.get("/v1/policy-state").json()
+    c.__exit__(None, None, None)
+
+    with _client(_app(copia, warm=WARM)) as c2:
+        subida = c2.get("/v1/policy-state").json()
+        com = c2.post("/v1/end-day", json={"date": "2026-10-23"}).json()
+        com_estado = c2.get("/v1/policy-state").json()
+    assert subida["pending_updates"] == 2 and subida["persisted_day"] == "2026-10-22"
+    assert com["updates_applied"] == sem["updates_applied"] == 2
+    assert com_estado["posterior_digest"] == sem_estado["posterior_digest"]
+    from spyno_service.store import Store
+    for d in abertas:
+        assert str(Store(f"sqlite+pysqlite:///{copia}").get(d["decision_id"])["applied_day"]) \
+            == "2026-10-23"
+
+
+def test_reinicio_repetido_nao_reaplica_duas_vezes(tmp_path):
+    db, app, c, _ = _dia_aberto(tmp_path)
+    c.__exit__(None, None, None)
+    with _client(_app(db, warm=WARM)) as c2:
+        assert c2.get("/v1/policy-state").json()["pending_updates"] == 2
+        _train_one(c2, point="2026-10-23T12:00:00-03:00", user="w")
+    with _client(_app(db, warm=WARM)) as c3:
+        assert c3.get("/v1/policy-state").json()["pending_updates"] == 3
+        assert c3.post("/v1/end-day", json={"date": "2026-10-23"}).json()["updates_applied"] == 3
+    with _client(_app(db, warm=WARM)) as c4:      # depois do fechamento, nada pendente
+        s = c4.get("/v1/policy-state").json()
+    assert s["pending_updates"] == 0 and s["persisted_day"] == "2026-10-23"
+
+
+def test_linhas_anteriores_a_coluna_nao_sao_reaplicadas(tmp_path):
+    """Sem train_seq não se sabe se a linha já entrou num ajuste: fica de fora."""
+    db, app, c, _ = _dia_aberto(tmp_path)
+    c.__exit__(None, None, None)
+    with app.state.ctx["store"].engine.begin() as conn:
+        conn.execute(text("UPDATE decisions SET train_seq = NULL"))
+    with _client(_app(db, warm=WARM)) as c2:
+        assert c2.get("/v1/policy-state").json()["pending_updates"] == 0
+
+
+def test_subida_congelada_nao_reaplica_e_a_saida_do_shadow_reaplica(tmp_path):
+    db, app, c, _ = _dia_aberto(tmp_path)
+    fechado = app.state.ctx["store"].load_posterior(app.state.ctx["policy_version"])["digest"]
+    c.__exit__(None, None, None)
+    with _client(_app(db, warm=WARM, shadow=True)) as c2:
+        s = c2.get("/v1/policy-state").json()
+    assert s["pending_updates"] == 0 and s["posterior_digest"] == fechado
+    with _client(_app(db, warm=WARM)) as c3:
+        assert c3.get("/v1/policy-state").json()["pending_updates"] == 2
+
+
+def test_falha_ao_gravar_marca_os_dois_lotes_na_nova_tentativa(tmp_path):
+    from spyno_service.store import METADATA
+
+    app = _app(tmp_path / "p.db", warm=WARM)
+    store = app.state.ctx["store"]
     with _client(app) as c:
-        _train_one(c)
-        c.post("/v1/end-day", json={"date": "2026-10-22"})
-        fechado = c.get("/v1/policy-state").json()
-        aberto = _train_one(c, point="2026-10-23T10:00:00-03:00")
-        assert c.get("/v1/policy-state").json()["pending_updates"] == 1
-    with _client(_app(db, warm=WARM)) as c:
-        s = c.get("/v1/policy-state").json()
-        r = c.post("/v1/end-day", json={"date": "2026-10-23"}).json()
-        depois = c.get("/v1/policy-state").json()
-    assert s["posterior_source"] == "persisted" and s["persisted_day"] == "2026-10-22"
-    assert s["pending_updates"] == 0, "o update do dia 23 se perdeu"
-    assert s["posterior_digest"] == fechado["posterior_digest"]
-    assert r["updates_applied"] == 0 and depois["posterior_digest"] == fechado["posterior_digest"]
-    assert app.state.ctx["store"].get(aberto["decision_id"])["trained"] is True
+        a = _train_one(c)
+        with store.engine.begin() as conn:
+            conn.execute(text("DROP TABLE policy_posteriors"))
+        assert c.post("/v1/end-day", json={"date": "2026-10-22"}).json()["ok"] is False
+        assert store.get(a["decision_id"])["applied_day"] is None
+        b = _train_one(c, point="2026-10-22T12:00:00-03:00")
+        METADATA.create_all(store.engine)
+        assert c.post("/v1/end-day", json={"date": "2026-10-22"}).json()["ok"] is True
+    assert {str(store.get(d["decision_id"])["applied_day"]) for d in (a, b)} == {"2026-10-22"}
 
 
 def test_persistida_corrompida_derruba_a_subida(tmp_path):
