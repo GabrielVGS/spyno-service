@@ -164,12 +164,22 @@ Garantias:
   transação do fechamento, as decisões que o ajuste consumiu (`applied_day`).
   Na subida, as treinadas da `policy_version` servida ainda sem `applied_day`
   são reaplicadas na ordem de `train_seq`: um reinício antes do end-day dá a
-  mesma posterior, bit a bit, que não reiniciar. Ficam de fora as linhas
+  mesma posterior, bit a bit, que não reiniciar. Exceção: se a gravação de um
+  end-day falhou e o serviço reinicia antes da nova tentativa, os dois lotes
+  entram num ajuste só, a partir da posterior do dia anterior, em vez de dois
+  ajustes em sequência (a aproximação de Laplace em lote não é idêntica à
+  sequencial). Uma linha de shadow reaplicada (com `SPYNO_SHADOW_LEARN=1`) marca
+  a posterior como aprendida em shadow, como no feedback. Ficam de fora as linhas
   anteriores a essas colunas (sem `train_seq`, não se sabe se já entraram num
   ajuste), as de shadow sem `SPYNO_SHADOW_LEARN=1` e, com a posterior congelada,
   todas (são reaplicadas na saída do shadow). Uma linha que não reaplica derruba
   a subida. Feedback e end-day são serializados por um lock, para que um
   desfecho no meio do fechamento não entre no ajuste sem ser marcado.
+- **Uma instância por vez.** A posterior, o buffer e o contador `train_seq`
+  vivem no processo. Duas instâncias sobre o mesmo banco (réplicas, ou um
+  deploy que sobe a nova antes de parar a antiga) divergem: `train_seq` colide
+  e um fechamento da antiga depois da reconstrução da nova reaplicaria linhas
+  já consumidas. Pare a instância antiga antes de subir a nova.
 
 ### Origem da posterior na subida (contrato 2.2)
 

@@ -132,7 +132,10 @@ def create_app(policy=None, store=None, config=None) -> FastAPI:
     #    (eles esperam a saída do shadow).
     buffer_ids: list[str] = []
     if persistable and not cfg.learning_frozen:
-        buffer_ids = _rebuild_buffer(chosen, store, policy_version, cfg.shadow_learn)
+        buffer_ids, de_shadow = _rebuild_buffer(chosen, store, policy_version, cfg.shadow_learn)
+        # Linha aprendida em shadow (só com SPYNO_SHADOW_LEARN=1) contamina a
+        # posterior como no feedback: o próximo end-day grava learned_in_shadow.
+        carried_shadow = carried_shadow or de_shadow
 
     app = FastAPI(
         title="Spyno — serviço de decisão",
@@ -429,21 +432,23 @@ def create_app(policy=None, store=None, config=None) -> FastAPI:
         else:
             obs = json.loads(record.get("policy_context") or record["context"])
             with ctx["end_day_lock"]:
-                seq = None
+                # Grava antes de atualizar a memória: se a gravação falha, nada
+                # entra no buffer e o log não diverge da posterior.
+                seq = ctx["train_seq"] + 1
+                store.mark_trained(req.decision_id, True, None, seq)
+                ctx["train_seq"] = seq
                 try:
                     # Sempre a ação EXECUTADA. Em shadow com SPYNO_SHADOW_LEARN=1 ela
                     # é 0: (x, 0, y) é dado do braço 0. A ação proposta nunca treina,
                     # porque o desfecho não dependeu dela.
                     pol.update(record["user_key"], obs, record["executed_action"], y)
                     trained = True
-                    ctx["train_seq"] += 1
-                    seq = ctx["train_seq"]
                     ctx["pending_updates"] += 1
                     ctx["buffer_ids"].append(req.decision_id)
                 except Exception:
                     log.exception("update da política falhou para %s", req.decision_id)
                     skip = "erro_no_update"
-                store.mark_trained(req.decision_id, trained, skip, seq)
+                    store.mark_trained(req.decision_id, False, skip)
             return FeedbackResponse(decision_id=req.decision_id, applied=True,
                                     trained=trained, train_skip_reason=skip)
         store.mark_trained(req.decision_id, trained, skip)
@@ -584,15 +589,17 @@ def _base_response(record: dict) -> DecideResponse:
 _Y = {"responded": 1, "not_responded": 0}
 
 
-def _rebuild_buffer(policy, store, policy_version: str, include_shadow: bool) -> list[str]:
+def _rebuild_buffer(policy, store, policy_version: str,
+                    include_shadow: bool) -> tuple[list[str], bool]:
     """Reaplica, na ordem original, os updates que nenhum end-day consumiu.
 
     O ajuste do end-day é em lote sobre o buffer, então reaplicar as mesmas
     linhas na mesma ordem dá a mesma posterior que o processo anterior daria.
     Uma linha que não reaplica derruba a subida: servir uma posterior que já
-    diverge do log seria pior do que não subir.
+    diverge do log seria pior do que não subir. Devolve as decisões reaplicadas
+    e se alguma delas foi tomada em shadow.
     """
-    ids = []
+    ids, de_shadow = [], False
     for r in store.unapplied_updates(policy_version, include_shadow):
         obs = json.loads(r["policy_context"] or r["context"])
         try:
@@ -601,9 +608,10 @@ def _rebuild_buffer(policy, store, policy_version: str, include_shadow: bool) ->
             raise RuntimeError(f"update pendente {r['decision_id']} não reaplica: "
                                f"{type(exc).__name__}: {exc}") from exc
         ids.append(r["decision_id"])
+        de_shadow = de_shadow or bool(r["shadow"])
     if ids:
         log.warning("buffer do dia aberto reconstruído do log: %d updates reaplicados", len(ids))
-    return ids
+    return ids, de_shadow
 
 
 def _shadow_taint(row: dict, store, policy_version: str) -> str | None:

@@ -302,7 +302,7 @@ class Store:
         """
         q = (select(decisions.c.decision_id, decisions.c.user_key, decisions.c.context,
                     decisions.c.policy_context, decisions.c.executed_action,
-                    decisions.c.outcome)
+                    decisions.c.outcome, decisions.c.shadow)
              .where(decisions.c.policy_version == policy_version)
              .where(decisions.c.trained.is_(True))
              .where(decisions.c.train_seq.isnot(None))
