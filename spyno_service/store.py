@@ -213,7 +213,17 @@ class Store:
             ).mappings().first()
         return dict(row) if row else None
 
-    def insert(self, record: dict, outcome_window_min: int | None = None) -> None:
+    def insert(self, record: dict, outcome_window_min: int | None = None) -> bool:
+        """Grava a decisão. Devolve False se o `decision_id` já estava gravado.
+
+        A decisão gravada nunca é sobrescrita: numa corrida entre duas chamadas
+        do mesmo ponto (outro processo, ou uma chamada que escapou do lock por
+        `decision_id` do app), vale a que chegou primeiro ao banco, e quem chamou
+        relê a linha (ver app.decide). Qualquer outra violação de integridade
+        sobe.
+        """
+        from sqlalchemy.exc import IntegrityError
+
         payload = dict(record)
         payload["context"] = json.dumps(payload["context"], default=str)
         for k in ("policy_context", "arm_probs"):
@@ -228,8 +238,18 @@ class Store:
             payload["decision_point"] + timedelta(minutes=window),
         )
         payload["window_closes_at"] = _utc(payload["window_closes_at"])
-        with self.engine.begin() as conn:
-            conn.execute(decisions.insert().values(**payload))
+        try:
+            with self.engine.begin() as conn:
+                conn.execute(decisions.insert().values(**payload))
+        except IntegrityError:
+            # A transação foi desfeita. Se a linha existe, a violação foi a da
+            # chave primária: outra chamada gravou este ponto primeiro. No
+            # PostgreSQL o INSERT concorrente espera o commit da outra transação
+            # antes de falhar, e a releitura (nova transação) já a enxerga.
+            if self.get(payload["decision_id"]) is not None:
+                return False
+            raise
+        return True
 
     # ---- desfechos -------------------------------------------------------
 
