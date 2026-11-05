@@ -13,6 +13,8 @@ from __future__ import annotations
 import os
 import threading
 import time
+import uuid
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime
 
@@ -185,19 +187,39 @@ def test_duas_instancias_concorrentes_sobre_o_mesmo_banco(tmp_path, backend):
 
     As duas amostram (braços diferentes) e uma perde o INSERT. As duas respostas
     têm de ser a decisão que ficou no banco. Com SPYNO_TEST_PG_URL roda também
-    no PostgreSQL, onde o INSERT perdedor espera o commit do vencedor.
+    no PostgreSQL, onde o INSERT perdedor espera o commit do vencedor. O teste
+    não toca nas tabelas existentes desse banco: cria um schema temporário de
+    nome aleatório, aponta o search_path para ele e o apaga no fim.
     """
-    from fastapi.testclient import TestClient
-    from sqlalchemy import text
-
-    from spyno_service.store import Store
-
     if backend == "sqlite":
-        url = f"sqlite+pysqlite:///{tmp_path}/t.db"
-    else:
-        url = os.environ["SPYNO_TEST_PG_URL"]
-        with Store(url).engine.begin() as conn:
-            conn.execute(text("DELETE FROM decisions"))
+        _corrida_entre_instancias(f"sqlite+pysqlite:///{tmp_path}/t.db")
+        return
+    with _schema_temporario(os.environ["SPYNO_TEST_PG_URL"]) as url:
+        _corrida_entre_instancias(url)
+
+
+@contextmanager
+def _schema_temporario(base_url: str):
+    """Schema descartável no PostgreSQL; devolve a URL com search_path nele."""
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.engine import make_url
+
+    schema = f"spyno_test_{uuid.uuid4().hex[:12]}"
+    admin = create_engine(base_url, future=True)
+    with admin.begin() as conn:
+        conn.execute(text(f'CREATE SCHEMA "{schema}"'))
+    base = make_url(base_url)
+    url = base.update_query_dict({"options": f"-csearch_path={schema}"})
+    try:
+        yield url.render_as_string(hide_password=False)
+    finally:
+        with admin.begin() as conn:
+            conn.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
+        admin.dispose()
+
+
+def _corrida_entre_instancias(url: str) -> None:
+    from fastapi.testclient import TestClient
 
     pols = [SeqPolicy(arms=(1,), delay=0.2), SeqPolicy(arms=(3,), delay=0.2)]
     clients = [TestClient(_app(url, p), headers=AUTH) for p in pols]
@@ -221,3 +243,5 @@ def test_duas_instancias_concorrentes_sobre_o_mesmo_banco(tmp_path, backend):
         assert [p.decide_calls for p in pols] == [1, 1]
         row = clients[0].app.state.ctx["store"].get(results[0][1]["decision_id"])
         assert row["recommended_action"] == results[0][1]["recommended_action"]
+    for c in clients:
+        c.app.state.ctx["store"].engine.dispose()

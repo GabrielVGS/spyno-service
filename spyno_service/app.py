@@ -389,8 +389,10 @@ def create_app(policy=None, store=None, config=None) -> FastAPI:
         if not store.insert(record, cfg.outcome_window_min):
             # Outro processo (réplica, ou a instância antiga num deploy) gravou
             # este ponto entre o get e o insert. Vale a decisão que chegou
-            # primeiro ao banco; a amostrada aqui é descartada. Ela só consumiu
-            # números do RNG: nenhum estado da política nem contador mudou.
+            # primeiro ao banco; a amostrada aqui é descartada. Esta chamada só
+            # consumiu números do RNG e marcou o usuário como visto (start_user
+            # não faz nada nas políticas servidas); posterior e contadores
+            # ficam como estavam.
             log.warning("decisão %s já gravada por outra chamada; amostra descartada",
                         decision_id)
             return _replay(store.get(decision_id), ctx)

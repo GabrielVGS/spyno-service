@@ -51,11 +51,15 @@ Garantias:
   `decision_id` faz a segunda esperar e devolver a decisão gravada, sem
   amostrar; entre processos sobre o mesmo banco, o INSERT perdedor viola a
   chave primária, a amostra dele é descartada e a resposta é a linha que
-  chegou primeiro. As duas respostas são idênticas. A amostra descartada só
-  consumiu números do RNG do processo perdedor (nenhum estado da política nem
-  contador muda): as decisões seguintes dele saem de outra posição da
-  sequência, o que não vicia nada, porque a propensão gravada de cada decisão
-  é a da distribuição de que ela foi sorteada.
+  chegou primeiro. As duas respostas são idênticas, salvo quando o processo
+  perdedor está em shadow e o vencedor não (ver `shadow_override`), a mesma
+  semântica do replay sequencial. O perdedor só consumiu números do RNG e
+  marcou o usuário como visto (`start_user` não faz nada nas políticas
+  servidas): as decisões seguintes dele saem de outra posição da sequência, o
+  que não vicia nada, porque a propensão gravada de cada decisão é a da
+  distribuição de que ela foi sorteada. O teste contra PostgreSQL
+  (`SPYNO_TEST_PG_URL`) roda num schema temporário e não toca nas tabelas do
+  banco apontado.
 - **Ação recomendada e executada são campos distintos.** Um envio bloqueado por
   guardrail não é uma abstenção escolhida pela política.
 - **Probability clipping e propensão exata.** Nos pontos elegíveis, P(enviar)

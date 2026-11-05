@@ -246,6 +246,8 @@ class Store:
             # chave primária: outra chamada gravou este ponto primeiro. No
             # PostgreSQL o INSERT concorrente espera o commit da outra transação
             # antes de falhar, e a releitura (nova transação) já a enxerga.
+            # Outra violação com a linha já existente também cai aqui e devolve
+            # False, o que é inócuo: a decisão gravada continua sendo a que vale.
             if self.get(payload["decision_id"]) is not None:
                 return False
             raise
