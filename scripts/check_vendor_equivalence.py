@@ -34,7 +34,8 @@ Uso::
     uv run python scripts/check_vendor_equivalence.py \\
         --decision-path ../_wt/decision-master [--out results.json]
 
-Sai com código 1 se A ou B divergirem.
+Sai com código 1 se A ou B divergirem e 2 se o controle C não divergir
+(a bateria não estaria comparando implementações distintas).
 """
 
 from __future__ import annotations
@@ -356,6 +357,11 @@ def main() -> None:
     report["diffs"] = {k: _diff(v[k], m[k], k) for k in ("served", "http", "class_i3")}
     ok = not report["diffs"]["served"] and not report["diffs"]["http"]
     report["equivalent_in_served_config"] = ok
+    # Controle: a bateria precisa enxergar a I3 onde ela é alcançável. Sem isso,
+    # "idêntico" pode ser só sinal de que os dois lados importaram o mesmo código.
+    control_ok = bool(report["diffs"]["class_i3"]) and \
+        bool(report["counts"]["master_gate_skipped_class"])
+    report["control_detects_i3"] = control_ok
 
     print(f"vendorizado: {v['module']}")
     print(f"master:      {m['module']} @ {report['master']['commit']}"
@@ -368,9 +374,13 @@ def main() -> None:
         for line in d[:5]:
             print(f"    {line}")
     print("equivalente na configuração servida:", "SIM" if ok else "NÃO")
+    if not control_ok:
+        print("CONTROLE FALHOU: a classe pura não divergiu (ou o gate do master não "
+              "descartou nada). A bateria não está comparando implementações "
+              "distintas; o resultado acima não vale.", file=sys.stderr)
     if args.out:
         Path(args.out).write_text(json.dumps(report, indent=1, ensure_ascii=False))
-    sys.exit(0 if ok else 1)
+    sys.exit(0 if ok and control_ok else (2 if not control_ok else 1))
 
 
 if __name__ == "__main__":

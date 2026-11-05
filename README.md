@@ -456,13 +456,30 @@ se ele passasse a chamar `decide` da classe.
 
 ```sh
 uv run --frozen python scripts/check_vendor_equivalence.py \
-    --decision-path ../_wt/decision-master --out equiv.json   # sai 1 se divergir
+    --out equiv.json   # sai 1 se divergir; 2 se o controle não divergir
 ```
 
-sha256 conferidos (vendorizado → master 5f940ef):
-`policy.py` e4bc23a4…ac0a336 → 4c131110…bcf95c;
-`hybrid.py` 445bce05…08232 → 6149be32…37308;
-`features.py` 7d0331d9…b60ff → 5d073c20…6c35.
+Sem `--decision-path`, o script procura `_wt/decision-master` subindo a partir
+do checkout, o que cobre tanto o checkout principal (`spyno-service/`) quanto uma
+worktree em `_wt/`. Um `--decision-path` relativo é resolvido a partir do
+diretório corrente, não do checkout.
+
+O que a verificação **não** cobre:
+
+- o artefato de warm-start entra pronto (m, q): o refit de Laplace
+  (`warm_start` da classe, usado só por `training/build_warmstart.py`) não é
+  exercitado aqui; o *crosscheck* registrado no artefato o comparou com um master
+  anterior (cf540d8), e `warm_start`/`fit_laplace` não mudaram entre ele e 5f940ef;
+- `ts_disjoint` e `ts_binary` não foram testados (também decidem por
+  `arm_wins`, mas não estão na bateria);
+- a verificação vale para este código: precisa ser refeita depois do merge de
+  `fix/rebuild-day-buffer` (reaplica updates na subida) e a cada mudança no
+  master.
+
+sha256 conferidos (vendorizado → master 5f940ef), 8 primeiros e 8 últimos dígitos:
+`policy.py` e4bc23a4…4ac0a336 → 4c131110…87bcf95c;
+`hybrid.py` 445bce05…89308232 → 6149be32…3f037308;
+`features.py` 7d0331d9…014b60ff → 5d073c20…0ef16c35.
 
 ## Rodando
 
