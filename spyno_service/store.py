@@ -93,13 +93,20 @@ decisions = Table(
     # decisão original fica como estava; a execução efetiva desta linha passa a
     # ser 0 (propensão 1) e o desfecho dela nunca treina
     Column("shadow_override_at", DateTime(timezone=True)),
+    # reconstrução do buffer do dia: ordem em que o update entrou no buffer da
+    # política (crescente em toda a vida do banco) e dia cujo end-day o consumiu.
+    # Treinada com `applied_day` nulo = está no buffer do dia aberto. Nulas nas
+    # linhas anteriores às colunas, que por isso nunca são reaplicadas
+    Column("train_seq", Integer),
+    Column("applied_day", Date),
 )
 
 #: Colunas acrescentadas no esquema v2. Bancos criados antes recebem um
 #: ALTER TABLE explícito na abertura (ver Store._migrar).
 V2_COLUMNS = ("eligible", "update_eligible", "policy_context", "counter_basis",
               "recommended_propensity", "arm_probs", "trained", "train_skip_reason",
-              "proposed_action", "learning_frozen", "shadow_override_at")
+              "proposed_action", "learning_frozen", "shadow_override_at",
+              "train_seq", "applied_day")
 
 #: Dias já fechados por /v1/end-day: é o que torna o fechamento idempotente.
 policy_days = Table(
@@ -270,12 +277,41 @@ class Store:
                 .values(shadow_override_at=_utc(when or datetime.now(timezone.utc)))
             )
 
-    def mark_trained(self, decision_id: str, trained: bool, reason: str | None) -> None:
+    def mark_trained(self, decision_id: str, trained: bool, reason: str | None,
+                     seq: int | None = None) -> None:
         with self.engine.begin() as conn:
             conn.execute(
                 update(decisions).where(decisions.c.decision_id == decision_id)
-                .values(trained=trained, train_skip_reason=reason)
+                .values(trained=trained, train_skip_reason=reason, train_seq=seq)
             )
+
+    def max_train_seq(self) -> int:
+        """Maior `train_seq` gravado (0 se nenhum): o próximo update continua dele."""
+        with self.engine.begin() as conn:
+            return int(conn.execute(
+                select(func.coalesce(func.max(decisions.c.train_seq), 0))
+            ).scalar_one())
+
+    def unapplied_updates(self, policy_version: str, include_shadow: bool) -> list[dict]:
+        """Updates desta versão que entraram no buffer e nenhum end-day consumiu.
+
+        Na ordem em que entraram (`train_seq`), que é a ordem do lote no ajuste:
+        reaplicados na subida, recompõem o buffer do dia aberto. Linhas de shadow
+        só entram se o shadow aprende (SPYNO_SHADOW_LEARN=1); as de posterior
+        congelada nunca treinaram.
+        """
+        q = (select(decisions.c.decision_id, decisions.c.user_key, decisions.c.context,
+                    decisions.c.policy_context, decisions.c.executed_action,
+                    decisions.c.outcome, decisions.c.shadow)
+             .where(decisions.c.policy_version == policy_version)
+             .where(decisions.c.trained.is_(True))
+             .where(decisions.c.train_seq.isnot(None))
+             .where(decisions.c.applied_day.is_(None))
+             .order_by(decisions.c.train_seq))
+        if not include_shadow:
+            q = q.where(decisions.c.shadow.is_(False))
+        with self.engine.begin() as conn:
+            return [dict(r) for r in conn.execute(q).mappings().all()]
 
     # ---- fechamento do dia -----------------------------------------------
 
@@ -287,12 +323,17 @@ class Store:
 
     def close_day(self, day, policy_version: str, updates_applied: int,
                   snapshot: dict | None = None, digest: str | None = None,
-                  learned_in_shadow: bool = False) -> bool:
+                  learned_in_shadow: bool = False,
+                  applied_ids: list[str] | None = None) -> bool:
         """Registra o fechamento e, se houver, a posterior resultante.
 
-        As duas escritas vão na mesma transação: ou o dia fica fechado com a
-        posterior dele gravada, ou nada muda. Devolve False se o dia já estava
-        fechado (nesse caso a posterior também não é regravada).
+        As escritas vão na mesma transação: ou o dia fica fechado com a
+        posterior dele gravada e os updates consumidos marcados com o dia
+        (`applied_day`), ou nada muda. Devolve False se o dia já estava fechado
+        (nesse caso a posterior também não é regravada).
+
+        `applied_ids` são as decisões que o ajuste consumiu: as do buffer, mais
+        as de uma tentativa anterior cuja gravação falhou (quem chama as guarda).
         """
         from sqlalchemy.exc import IntegrityError
 
@@ -314,6 +355,11 @@ class Store:
                     if not done:
                         conn.execute(policy_posteriors.insert().values(
                             policy_version=policy_version, **values))
+                if applied_ids:
+                    conn.execute(
+                        update(decisions)
+                        .where(decisions.c.decision_id.in_(applied_ids))
+                        .values(applied_day=day))
         except IntegrityError:
             # Só a corrida no fechamento do mesmo dia é "já fechado"; qualquer
             # outra violação (posterior inválida) sobe, com a transação desfeita.
