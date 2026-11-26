@@ -9,6 +9,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeout
+from contextlib import contextmanager
 from datetime import datetime, timezone
 
 import numpy as np
@@ -158,6 +159,7 @@ def create_app(policy=None, store=None, config=None) -> FastAPI:
         # no end-day. Sem ele, um feedback no meio do end-day entraria no ajuste
         # sem ser marcado com o dia, ou o contrário
         "end_day_lock": threading.Lock(),
+        "decide_locks": _KeyedLocks(),
         "posterior": {"source": source, "init": init if persistable else None,
                       "warmstart": warm, "persisted_day": persisted_day,
                       "skipped_persisted": skipped,
@@ -277,26 +279,39 @@ def create_app(policy=None, store=None, config=None) -> FastAPI:
     @v1.post("/decide", response_model=DecideResponse)
     def decide(req: DecideRequest, request: Request) -> DecideResponse:
         ctx = request.app.state.ctx
+        decision_id = make_decision_id(req.user_key, req.decision_point,
+                                       ctx["policy_version"])
+        # Chamadas concorrentes do mesmo ponto (um retry do backend que chega
+        # antes de a primeira terminar) passam uma de cada vez: a segunda acha a
+        # decisão gravada e não amostra. O lock é por `decision_id`, então pontos
+        # diferentes não esperam uns pelos outros.
+        with ctx["decide_locks"].hold(decision_id):
+            return _decide(req, ctx, decision_id)
+
+    def _replay(existing: dict, ctx) -> DecideResponse:
+        """Resposta de uma decisão já gravada (repetição do mesmo ponto)."""
+        store = ctx["store"]
+        if ctx["config"].shadow and existing["executed_action"] != 0 \
+                and existing.get("shadow_override_at") is None:
+            # Decisão gravada fora do shadow e repetida com o serviço já em
+            # shadow (reinício na mesma hora): nada pode ser enviado. A
+            # decisão original não é reescrita; marca-se que a execução
+            # efetiva passou a ser 0, e daqui em diante toda repetição
+            # (também fora do shadow) devolve a abstenção forçada.
+            store.mark_shadow_override(existing["decision_id"])
+            existing = store.get(existing["decision_id"])
+        return _to_response(existing)
+
+    def _decide(req: DecideRequest, ctx, decision_id: str) -> DecideResponse:
         cfg, store, pol = ctx["config"], ctx["store"], ctx["policy"]
         policy_version = ctx["policy_version"]
-
-        decision_id = make_decision_id(req.user_key, req.decision_point, policy_version)
 
         # Idempotência: o mesmo ponto de decisão (mesma hora) devolve a decisão
         # já tomada, sem nova amostragem. Sem isso um retry ou um tick duplicado
         # viraria exploração extra e corromperia a propensão registrada.
         existing = store.get(decision_id)
         if existing is not None:
-            if cfg.shadow and existing["executed_action"] != 0 \
-                    and existing.get("shadow_override_at") is None:
-                # Decisão gravada fora do shadow e repetida com o serviço já em
-                # shadow (reinício na mesma hora): nada pode ser enviado. A
-                # decisão original não é reescrita; marca-se que a execução
-                # efetiva passou a ser 0, e daqui em diante toda repetição
-                # (também fora do shadow) devolve a abstenção forçada.
-                store.mark_shadow_override(decision_id)
-                existing = store.get(decision_id)
-            return _to_response(existing)
+            return _replay(existing, ctx)
 
         raw = req.context.model_dump()
         obs, basis = _effective_context(req.context, cfg.shadow)
@@ -389,7 +404,16 @@ def create_app(policy=None, store=None, config=None) -> FastAPI:
             "fallback_reason": fallback_reason,
             "latency_ms": (time.perf_counter() - started) * 1000.0,
         }
-        store.insert(record, cfg.outcome_window_min)
+        if not store.insert(record, cfg.outcome_window_min):
+            # Outro processo (réplica, ou a instância antiga num deploy) gravou
+            # este ponto entre o get e o insert. Vale a decisão que chegou
+            # primeiro ao banco; a amostrada aqui é descartada. Esta chamada só
+            # consumiu números do RNG e marcou o usuário como visto (start_user
+            # não faz nada nas políticas servidas); posterior e contadores
+            # ficam como estavam.
+            log.warning("decisão %s já gravada por outra chamada; amostra descartada",
+                        decision_id)
+            return _replay(store.get(decision_id), ctx)
         return _to_response(record)
 
     @v1.post("/feedback", response_model=FeedbackResponse)
@@ -547,6 +571,37 @@ def _effective_context(context: Context, shadow: bool) -> tuple[dict, str]:
     if shadow:
         log.warning("shadow sem contadores *_proposed: features usam os contadores reais")
     return obs, "executed"
+
+
+class _KeyedLocks:
+    """Um lock por chave, criado sob demanda e descartado quando ninguém o usa.
+
+    Serializa só as chamadas com a mesma chave. A contagem de quem segura ou
+    espera cada lock é o que permite descartá-lo sem que uma chamada à espera
+    fique com um lock órfão.
+    """
+
+    def __init__(self):
+        self._guard = threading.Lock()
+        self._locks: dict[str, list] = {}  # chave -> [lock, usuários]
+
+    @contextmanager
+    def hold(self, key: str):
+        with self._guard:
+            entry = self._locks.setdefault(key, [threading.Lock(), 0])
+            entry[1] += 1
+        try:
+            with entry[0]:
+                yield
+        finally:
+            with self._guard:
+                entry[1] -= 1
+                if entry[1] == 0:
+                    del self._locks[key]
+
+    def __len__(self) -> int:
+        with self._guard:
+            return len(self._locks)
 
 
 def _to_response(record: dict) -> DecideResponse:
