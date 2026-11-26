@@ -455,6 +455,68 @@ As políticas do `spyno-decision` são usadas sem alteração: aquele pacote é 
 fonte única das políticas validadas, e foi ele que produziu os resultados de
 avaliação, ablação, sensibilidade e OPE.
 
+### Cópia vendorizada × `spyno-decision` master (verificado em 2026-11-05)
+
+A cópia em `spyno_decision/` é a do commit 03d5031 (julho). Os experimentos do
+TCC rodaram com o master do `spyno-decision`, que difere dela em `policy.py`,
+`hybrid.py` e `features.py` (`baselines.py` e `__init__.py` são idênticos):
+
+- **Correção I3** (`EligibilityGate`, 6deb174): `decide(uid, …, eligible)`
+  guarda a elegibilidade e o `update(uid, …)` seguinte do mesmo usuário é
+  descartado se o ponto era inelegível. Corrige o laço do simulador, que chamava
+  `update` em toda hora. No serviço o gate nunca dispara: a decisão passa por
+  `ClippedPolicy` → `arm_wins`, que não chama `decide` da classe, e sem
+  elegibilidade registrada o gate trata o ponto como elegível. O `/v1/feedback`
+  já só treina pontos `update_eligible`.
+- **`hybrid_x` de dimensão genérica** (d = `len(x)` em vez de `DIM`) e
+  `EXTRA_DIM` (0 por padrão), para subclasses com features extras (dose). Com o
+  vetor padrão d = `DIM` e o resultado é o mesmo; a amostra de `decide` usa
+  `len(self.m)` = `HDIM` normais, a mesma sequência do RNG.
+- **Opções de ablação** `zero_features=()` e `obs_transform=None` (e, em
+  `features.py`, `fbm_backend`/`with_backend_fbm`, não usadas aqui). Com os
+  padrões, `_vec(obs)` = `vectorize(obs)`: comportamento idêntico.
+
+`scripts/check_vendor_equivalence.py` roda a mesma bateria com cada
+implementação, num subprocesso próprio, e compara bit a bit: `ts_hybrid`, c =
+0,1, clipping p05, M = 1000, warm-start `warmstart/ts_hybrid-v2-c0.1.json`;
+404 contextos (inelegíveis e extremos incluídos) × 3 dias, com updates que
+incluem o caso da I3 (decisão inelegível seguida de update do mesmo usuário), e
+o mesmo fluxo pela API (/v1/decide → /v1/feedback → /v1/end-day). Contra o
+master `5f940ef`, vetores híbridos, π clipada, ações sorteadas, propensões, m e
+q depois de cada fechamento de dia e o digest da posterior saíram **idênticos**
+(gate do master: 0 updates descartados). O controle com a classe pura
+(`HybridLogisticTS.decide` + `update`, fora do caminho servido) diverge, como
+esperado: o master descarta 117 updates inelegíveis. Conclusão: na configuração
+servida a cópia vendorizada é equivalente ao master; a I3 só mudaria o serviço
+se ele passasse a chamar `decide` da classe.
+
+```sh
+uv run --frozen python scripts/check_vendor_equivalence.py \
+    --out equiv.json   # sai 1 se divergir; 2 se o controle não divergir
+```
+
+Sem `--decision-path`, o script procura `_wt/decision-master` subindo a partir
+do checkout, o que cobre tanto o checkout principal (`spyno-service/`) quanto uma
+worktree em `_wt/`. Um `--decision-path` relativo é resolvido a partir do
+diretório corrente, não do checkout.
+
+O que a verificação **não** cobre:
+
+- o artefato de warm-start entra pronto (m, q): o refit de Laplace
+  (`warm_start` da classe, usado só por `training/build_warmstart.py`) não é
+  exercitado aqui; o *crosscheck* registrado no artefato o comparou com um master
+  anterior (cf540d8), e `warm_start`/`fit_laplace` não mudaram entre ele e 5f940ef;
+- `ts_disjoint` e `ts_binary` não foram testados (também decidem por
+  `arm_wins`, mas não estão na bateria);
+- a verificação vale para este código: precisa ser refeita depois do merge de
+  `fix/rebuild-day-buffer` (reaplica updates na subida) e a cada mudança no
+  master.
+
+sha256 conferidos (vendorizado → master 5f940ef), 8 primeiros e 8 últimos dígitos:
+`policy.py` e4bc23a4…4ac0a336 → 4c131110…87bcf95c;
+`hybrid.py` 445bce05…89308232 → 6149be32…3f037308;
+`features.py` 7d0331d9…014b60ff → 5d073c20…0ef16c35.
+
 ## Rodando
 
 ```sh
@@ -542,7 +604,10 @@ Mudou alguma dependência no `pyproject.toml`? Rode `uv lock` e versione o
 - O `spyno-decision` entra como cópia vendorizada em `spyno_decision/`
   (`spyno_decision/PROVENIENCIA.md`), sincronizada à mão. A subida do serviço não
   confere o sha256 desses arquivos; quem confere é o artefato de warm-start (que
-  registra os sha256) e o `spyno-decision` (blobs aceitos). Os scripts de
+  registra os sha256) e o `spyno-decision` (blobs aceitos). A cópia é de
+  03d5031, anterior ao master; a equivalência na configuração servida é
+  verificada por `scripts/check_vendor_equivalence.py` (ver "Políticas"), não
+  pela CI, e precisa ser refeita a cada mudança no master. Os scripts de
   `training/` importam o `spyno-sim` por `sys.path` (`SPYNO_SIM_PATH`).
 - Na imagem, `/app` pertence ao usuário `spyno` para que o SQLite padrão
   (`./spyno_service.db`) possa ser criado. O código é do root, mas o usuário
