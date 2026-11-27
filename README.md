@@ -508,9 +508,11 @@ O que a verificação **não** cobre:
   anterior (cf540d8), e `warm_start`/`fit_laplace` não mudaram entre ele e 5f940ef;
 - `ts_disjoint` e `ts_binary` não foram testados (também decidem por
   `arm_wins`, mas não estão na bateria);
-- a verificação vale para este código: precisa ser refeita depois do merge de
-  `fix/rebuild-day-buffer` (reaplica updates na subida) e a cada mudança no
-  master.
+- a verificação vale para o código conferido e precisa ser refeita a cada
+  mudança no serviço ou no master. Foi refeita em 27/11/2026, depois do merge de
+  `fix/rebuild-day-buffer` (PR #6), com o serviço em `main` @ d540d19 e o master
+  em `85f1df3`: caminho servido e fluxo HTTP **idênticos**, controle da classe
+  pura divergente como esperado (117 updates descartados pelo master).
 
 sha256 conferidos (vendorizado → master 5f940ef), 8 primeiros e 8 últimos dígitos:
 `policy.py` e4bc23a4…4ac0a336 → 4c131110…87bcf95c;
